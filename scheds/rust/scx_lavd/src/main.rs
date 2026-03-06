@@ -678,7 +678,12 @@ impl<'a> Scheduler<'a> {
         rodata.per_cpu_dsq = opts.per_cpu_dsq;
         rodata.enable_cpu_bw = opts.enable_cpu_bw;
 
-        if !ksym_exists("scx_group_set_bandwidth").unwrap() {
+        if !opts.enable_cpu_bw {
+            skel.struct_ops.lavd_ops_mut().cgroup_init = std::ptr::null_mut();
+            skel.struct_ops.lavd_ops_mut().cgroup_exit = std::ptr::null_mut();
+            skel.struct_ops.lavd_ops_mut().cgroup_move = std::ptr::null_mut();
+            skel.struct_ops.lavd_ops_mut().cgroup_set_bandwidth = std::ptr::null_mut();
+         } else if !ksym_exists("scx_group_set_bandwidth").unwrap() {
             skel.struct_ops.lavd_ops_mut().cgroup_set_bandwidth = std::ptr::null_mut();
             warn!("Kernel does not support ops.cgroup_set_bandwidth(), so disable it.");
         }
