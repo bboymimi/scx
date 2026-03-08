@@ -171,6 +171,16 @@ struct task_ctx {
 	 */
 	u64	avg_runtime_wall;
 	/*
+	 * - Accumulated invariant runtime (capacity and frequency scaled)
+	 * - Used alongside acc_runtime_wall for load balancing budgets
+	 */
+	u64	acc_runtime_invr;
+	/*
+	 * - Average invariant runtime per schedule (EWMA)
+	 * - Used for load balancing budget calculations
+	 */
+	u64	avg_runtime_invr;
+	/*
 	 * - Total CPU time consumed for this task scaled by task's weight
 	 * - Used to calculate avg_svc_time_wwgt
 	 */

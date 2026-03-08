@@ -497,6 +497,7 @@ static void account_task_runtime(struct task_struct *p,
 	WRITE_ONCE(cpuc->tot_task_time_invr, cpuc->tot_task_time_invr + task_time_invr);
 
 	taskc->acc_runtime_wall += task_time_wall;
+	taskc->acc_runtime_invr += task_time_invr;
 	taskc->svc_time_wwgt += task_time_wwgt;
 	taskc->last_measured_wall_clk = now;
 	taskc->last_measured_task_clk = now_task;
@@ -527,6 +528,9 @@ static void update_stat_for_stopping(struct task_struct *p,
 
 	taskc->avg_runtime_wall = calc_avg(taskc->avg_runtime_wall,
 					   taskc->acc_runtime_wall);
+	taskc->avg_runtime_invr = calc_avg(taskc->avg_runtime_invr,
+					   taskc->acc_runtime_invr);
+	taskc->acc_runtime_invr = 0;
 
 	/*
 	 * Account for how much of the slice was used for this instance.
@@ -563,6 +567,8 @@ static void update_stat_for_refill(struct task_struct *p,
 	 */
 	taskc->avg_runtime_wall = calc_avg(taskc->avg_runtime_wall,
 					   taskc->acc_runtime_wall);
+	taskc->avg_runtime_invr = calc_avg(taskc->avg_runtime_invr,
+					   taskc->acc_runtime_invr);
 }
 
 static bool can_direct_dispatch(struct cpu_ctx *cpuc, bool is_cpu_idle)
@@ -1758,6 +1764,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(lavd_init_task, struct task_struct *p,
 		taskc->last_running_clk = now;
 		taskc->last_quiescent_clk = now;
 		taskc->avg_runtime_wall = sys_stat.slice_wall;
+		taskc->avg_runtime_invr = sys_stat.slice_wall;
 		taskc->svc_time_wwgt = sys_stat.avg_svc_time_wwgt;
 	}
 
