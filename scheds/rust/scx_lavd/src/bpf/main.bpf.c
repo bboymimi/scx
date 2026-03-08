@@ -1764,7 +1764,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(lavd_init_task, struct task_struct *p,
 		taskc->last_running_clk = now;
 		taskc->last_quiescent_clk = now;
 		taskc->avg_runtime_wall = sys_stat.slice_wall;
-		taskc->avg_runtime_invr = sys_stat.slice_wall;
+		taskc->avg_runtime_invr = sys_stat.avg_runtime_invr;
 		taskc->svc_time_wwgt = sys_stat.avg_svc_time_wwgt;
 	}
 

@@ -435,8 +435,11 @@ static void calc_sys_stat(void)
 			calc_avg32(sys_stat.max_perf_cri, c->max_perf_cri);
 	}
 
-	if (c->nr_sched > 0)
+	if (c->nr_sched > 0) {
 		avg_svc_time_wwgt = c->tot_task_time_wwgt / c->nr_sched;
+		sys_stat.avg_runtime_invr = calc_avg(sys_stat.avg_runtime_invr,
+						     c->tot_task_time_invr / c->nr_sched);
+	}
 	sys_stat.avg_svc_time_wwgt = calc_avg(sys_stat.avg_svc_time_wwgt,
 					      avg_svc_time_wwgt);
 	sys_stat.nr_queued_task = calc_avg(sys_stat.nr_queued_task, c->nr_queued_task);

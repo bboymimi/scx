@@ -54,6 +54,7 @@ struct sys_stat {
 				   which is capacity and frequency invariant */
 
 	u64	avg_svc_time_wwgt; /* average service time per task (weighted wall clock time) */
+	u64	avg_runtime_invr;  /* average invariant runtime per schedule (capacity+freq scaled) */
 	u64	nr_queued_task;
 	u64	slice_wall;	/* base time slice (wall clock time) */
 
