@@ -40,6 +40,7 @@ int plan_x_cpdom_migration(void)
 	u32 stealer_threshold, stealee_threshold, nr_stealee = 0;
 	u64 avg_load_invr = 0, min_load_invr = U64_MAX, max_load_invr = 0;
 	u64 x_mig_delta, util, qlen, qlen_invr;
+	u64 total_queued_load_invr = 0, total_cap_sum = 0;
 	bool overflow_running = false;
 	int nz_qlen = 0;
 
@@ -100,6 +101,8 @@ int plan_x_cpdom_migration(void)
 			max_load_invr = cpdomc->load_invr;
 		if (qlen)
 			nz_qlen++;
+		total_queued_load_invr += cpdomc->queued_load_invr;
+		total_cap_sum += cpdomc->cap_sum_active_cpus;
 	}
 	if (sys_stat.nr_active_cpdoms)
 		avg_load_invr /= sys_stat.nr_active_cpdoms;
@@ -171,9 +174,29 @@ int plan_x_cpdom_migration(void)
 
 		/*
 		 * Over-loaded or non-active domains become a stealee.
+		 * Budget = half the excess invariant load beyond fair share.
 		 */
 		if (!cpdomc->nr_active_cpus ||
 		    cpdomc->load_invr >= stealee_threshold) {
+			u64 budget_invr = 0;
+
+			if (cpdomc->nr_active_cpus && total_cap_sum > 0) {
+				u64 fair_share_invr = total_queued_load_invr *
+						     cpdomc->cap_sum_active_cpus /
+						     total_cap_sum;
+				if (cpdomc->queued_load_invr > fair_share_invr)
+					budget_invr = (cpdomc->queued_load_invr - fair_share_invr) / 2;
+			}
+
+			/*
+			 * Overflow domains (no active CPUs): allow at least
+			 * one task to be stolen.
+			 */
+			if (!cpdomc->nr_active_cpus &&
+			    cpdomc->cur_util_wall_sum > 0)
+				budget_invr = max(budget_invr, sys_stat.avg_runtime_invr);
+
+			WRITE_ONCE(cpdomc->budget_invr, budget_invr);
 			WRITE_ONCE(cpdomc->is_stealer, false);
 			WRITE_ONCE(cpdomc->is_stealee, true);
 			nr_stealee++;
@@ -183,6 +206,7 @@ int plan_x_cpdom_migration(void)
 		/*
 		 * Otherwise, keep tasks as it is.
 		 */
+		WRITE_ONCE(cpdomc->budget_invr, 0);
 		WRITE_ONCE(cpdomc->is_stealer, false);
 		WRITE_ONCE(cpdomc->is_stealee, false);
 	}
@@ -204,6 +228,7 @@ reset_and_skip_lb:
 			cpdomc = MEMBER_VPTR(cpdom_ctxs, [cpdom_id]);
 			WRITE_ONCE(cpdomc->is_stealer, false);
 			WRITE_ONCE(cpdomc->is_stealee, false);
+			WRITE_ONCE(cpdomc->budget_invr, 0);
 		}
 		sys_stat.nr_stealee = 0;
 	}
