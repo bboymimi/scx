@@ -39,7 +39,7 @@ int plan_x_cpdom_migration(void)
 	u64 cpdom_id;
 	u32 stealer_threshold, stealee_threshold, nr_stealee = 0;
 	u64 avg_load_invr = 0, min_load_invr = U64_MAX, max_load_invr = 0;
-	u64 x_mig_delta, util, qlen, qlen_invr;
+	u64 x_mig_delta, util, qload_invr;
 	u64 total_queued_load_invr = 0, total_cap_sum = 0;
 	bool overflow_running = false;
 	int nz_qlen = 0;
@@ -51,10 +51,10 @@ int plan_x_cpdom_migration(void)
 	 * the same or similar. This helps to maintain low latency
 	 * when the system is underloaded.
 	 *
-	 * 2) The *scaled* queue lengths of active compute domains should be
-	 * the same or similar. Using scaled queue length allows putting more
-	 * tasks to the powerful compute domains. This helps to maintain high
-	 * throughput when the system is overloaded.
+	 * 2) The *scaled* queued loads of active compute domains should be
+	 * the same or similar. Using capacity-scaled queued load allows
+	 * putting more tasks to the powerful compute domains. This helps to
+	 * maintain high throughput when the system is overloaded.
 	 */
 
 	/*
@@ -90,16 +90,15 @@ int plan_x_cpdom_migration(void)
 		 * Use avg_util_wall_sum for stable load balancing decisions.
 		 */
 		util = (cpdomc->avg_util_wall_sum << LAVD_SHIFT) / cpdomc->nr_active_cpus;
-		qlen = cpdomc->nr_queued_task;
-		qlen_invr = (qlen << (LAVD_SHIFT * 3)) / cpdomc->cap_sum_active_cpus;
-		cpdomc->load_invr = util + qlen_invr;
+		qload_invr = (cpdomc->queued_load_invr << LAVD_SHIFT) / cpdomc->cap_sum_active_cpus;
+		cpdomc->load_invr = util + qload_invr;
 		avg_load_invr += cpdomc->load_invr;
 
 		if (min_load_invr > cpdomc->load_invr)
 			min_load_invr = cpdomc->load_invr;
 		if (max_load_invr < cpdomc->load_invr)
 			max_load_invr = cpdomc->load_invr;
-		if (qlen)
+		if (cpdomc->queued_load_invr)
 			nz_qlen++;
 		total_queued_load_invr += cpdomc->queued_load_invr;
 		total_cap_sum += cpdomc->cap_sum_active_cpus;
