@@ -309,6 +309,24 @@ u64 __attribute__((noinline)) pick_most_loaded_dsq(struct cpdom_ctx *cpdomc)
 	return pick_dsq_id;
 }
 
+/*
+ * Subtract the stolen task's invariant runtime from the stealee's
+ * budget. When the budget is exhausted, clear the stealee flag so
+ * other stealers skip this domain for the rest of the round.
+ */
+static __always_inline void decrement_budget(struct cpdom_ctx *cpdomc,
+					     u64 task_load_invr)
+{
+	u64 remaining = READ_ONCE(cpdomc->budget_invr);
+
+	if (remaining > task_load_invr)
+		WRITE_ONCE(cpdomc->budget_invr, remaining - task_load_invr);
+	else {
+		WRITE_ONCE(cpdomc->budget_invr, 0);
+		WRITE_ONCE(cpdomc->is_stealee, false);
+	}
+}
+
 static bool try_to_steal_task(struct cpdom_ctx *cpdomc)
 {
 	struct cpdom_ctx *cpdomc_pick;
@@ -357,22 +375,36 @@ static bool try_to_steal_task(struct cpdom_ctx *cpdomc)
 			if (!READ_ONCE(cpdomc_pick->is_stealee) || !cpdomc_pick->is_valid)
 				continue;
 
+			if (READ_ONCE(cpdomc_pick->budget_invr) == 0)
+				continue;
+
 			dsq_id = pick_most_loaded_dsq(cpdomc_pick);
 
 			/*
-			 * If task stealing is successful, mark the stealer
-			 * and the stealee's job done. By marking done,
-			 * those compute domains would not be involved in
-			 * load balancing until the end of this round,
-			 * so this helps gradual migration. Note that multiple
-			 * stealers can steal tasks from the same stealee.
-			 * However, we don't coordinate concurrent stealing
-			 * because the chance is low and there is no harm
-			 * in slight over-stealing.
+			 * Peek at the head task to get its actual size
+			 * for budget accounting.
+			 */
+			u64 task_load = sys_stat.avg_runtime_invr;
+			struct task_struct *peek_p = __COMPAT_scx_bpf_dsq_peek(dsq_id);
+			if (peek_p) {
+				task_ctx *peek_taskc = get_task_ctx(peek_p);
+				if (peek_taskc && peek_taskc->avg_runtime_invr)
+					task_load = peek_taskc->avg_runtime_invr;
+			}
+
+			/*
+			 * If task stealing is successful, decrement the
+			 * stealee's budget. The stealer stays active for
+			 * the entire round. Budget limits total migration
+			 * per stealee to prevent thundering herd.
+			 *
+			 * Note that multiple stealers can steal from the
+			 * same stealee concurrently. We don't coordinate
+			 * this because the chance is low and there is no
+			 * harm in slight over-stealing.
 			 */
 			if (consume_dsq(cpdomc_pick, dsq_id)) {
-				WRITE_ONCE(cpdomc_pick->is_stealee, false);
-				WRITE_ONCE(cpdomc->is_stealer, false);
+				decrement_budget(cpdomc_pick, task_load);
 				return true;
 			}
 		}
