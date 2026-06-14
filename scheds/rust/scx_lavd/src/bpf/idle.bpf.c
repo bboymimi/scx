@@ -632,6 +632,101 @@ s32 migrate_to_neighbor(struct pick_ctx *ctx, struct cpdom_ctx *cpdc,
 	return cpu;
 }
 
+/*
+ * Find a cpdom-local primary CPU whose qload_invr is at least one
+ * cpdom-average-shift below prev_cpu's, and return it. This is the
+ * wake-time intra-cpdom counterpart to the cross-cpdom fast-LB picker
+ * (pick_most_loaded_dsq); it fires only under --per-cpu-dsq when
+ * pick_idle_cpu has exhausted idle candidates and would otherwise
+ * return prev_cpu.
+ *
+ * Threshold semantics match LAVD_CPDOM_MIG_SHIFT: a candidate must
+ * undercut prev_cpu by more than (cpdom avg qload_invr) >>
+ * LAVD_SOFT_AFFINITY_SHIFT (= 12.5%). Strict inequality + asymmetric
+ * threshold biases the picker toward keeping prev_cpu -- that's the
+ * stickiness half of the trade-off.
+ *
+ * Returns -ENOENT if no candidate beats prev_cpu by enough to
+ * justify the cache miss.
+ */
+__hidden __noinline
+int pick_least_loaded_cpu_in_cpdom(struct pick_ctx *ctx, s64 sticky_cpdom)
+{
+	struct cpdom_ctx *cpdomc;
+	struct cpu_ctx *cpuc;
+	u64 lowest_load, threshold, prev_load;
+	int picked_cpu = -ENOENT;
+	int prev_primary, cpu, i, j, k;
+
+	if (!per_cpu_dsq || sticky_cpdom < 0)
+		return -ENOENT;
+
+	cpdomc = MEMBER_VPTR(cpdom_ctxs, [sticky_cpdom]);
+	if (!cpdomc || !cpdomc->nr_active_cpus)
+		return -ENOENT;
+
+	prev_primary = get_primary_cpu(ctx->prev_cpu);
+	cpuc = get_cpu_ctx_id(prev_primary);
+	if (!cpuc)
+		return -ENOENT;
+	prev_load = READ_ONCE(cpuc->qload_invr);
+	if (!prev_load)
+		return -ENOENT; /* prev_cpu already lightly loaded -- stay */
+
+	lowest_load = prev_load;
+
+	/*
+	 * Single pass: track the lowest-load primary in the cpdom. The
+	 * threshold is computed from prev_load (not cpdom average) so we
+	 * avoid carrying total_load / active_cpus state across every
+	 * iteration -- that extra state doubles verifier complexity and
+	 * trips the 6.13/6.18 jump limit when combined with 512-CPU
+	 * cpumask iteration.
+	 */
+	bpf_for(i, 0, LAVD_CPU_ID_MAX/64) {
+		u64 cpumask = cpdomc->__cpumask[i];
+		bpf_for(k, 0, 64) {
+			u64 load;
+
+			j = cpumask_next_set_bit(&cpumask);
+			if (j < 0)
+				break;
+			cpu = (i * 64) + j;
+			if (cpu >= nr_cpu_ids)
+				break;
+			if (cpu != get_primary_cpu(cpu))
+				continue; /* qload_invr only on primaries */
+
+			cpuc = get_cpu_ctx_id(cpu);
+			if (!cpuc)
+				continue;
+			load = READ_ONCE(cpuc->qload_invr);
+
+			if (load < lowest_load) {
+				lowest_load = load;
+				picked_cpu = cpu;
+			}
+		}
+	}
+
+	if (picked_cpu < 0)
+		return -ENOENT;
+
+	threshold = prev_load >> LAVD_SOFT_AFFINITY_SHIFT;
+	if (prev_load <= lowest_load + threshold)
+		return -ENOENT; /* gap too small -- keep cache warmth */
+
+	/*
+	 * Final affinity check on the picked CPU. Done OUTSIDE the loop so
+	 * can_run_on_cpu's kptr-aware cpumask deref does not multiply
+	 * verifier state across 512 iterations.
+	 */
+	if (!can_run_on_cpu(ctx, picked_cpu))
+		return -ENOENT;
+
+	return picked_cpu;
+}
+
 __hidden __noinline
 s32 pick_idle_cpu(struct pick_ctx *ctx, bool *is_idle)
 {
@@ -897,6 +992,21 @@ s32 pick_idle_cpu(struct pick_ctx *ctx, bool *is_idle)
 		cpu = migrate_to_neighbor(ctx, cpdc, 0, &sticky_cpdom, is_idle);
 		if (cpu >= 0)
 			goto unlock_out;
+	}
+
+	/*
+	 * Under --per-cpu-dsq, the load balancing mechanism only fires at
+	 * dispatch time (try_to_steal_task / force_to_steal_task) and
+	 * crosses cpdoms. Intra-cpdom imbalance at wake time has nowhere
+	 * else to be corrected, so try a soft-affinity reroute here: pick
+	 * a primary CPU in the sticky cpdom whose qload_invr is
+	 * substantially lower than prev_cpu's. Falls through to the
+	 * prev_cpu fallback if no candidate beats the threshold.
+	 */
+	cpu = pick_least_loaded_cpu_in_cpdom(ctx, sticky_cpdom);
+	if (cpu >= 0) {
+		sticky_cpdom = -ENOENT;
+		goto unlock_out;
 	}
 
 	/*
