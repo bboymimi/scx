@@ -69,6 +69,19 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::filter::EnvFilter;
 
 const SCHEDULER_NAME: &str = "scx_lavd";
+
+/// Locality-check mode for L2-sticky dispatch.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum L2StickyMode {
+    /// Logical-CPU equivalence (suggested CPU == this CPU). Narrowest
+    /// check; only matches when the task already wants exactly this CPU.
+    L1,
+    /// Primary-CPU equivalence (primary(suggested CPU) == primary(this CPU)).
+    /// Captures SMT siblings on SMT systems; identical to L1 on no-SMT
+    /// platforms (e.g. AWS Graviton).
+    L2,
+}
+
 /// scx_lavd: Latency-criticality Aware Virtual Deadline (LAVD) scheduler
 ///
 /// The rust part is minimal. It processes command line options and logs out
@@ -160,6 +173,30 @@ struct Opts {
     /// Set to 0 to disable. Set to 100 to always bypass deadline scheduling.
     #[clap(long = "lb-local-dsq-util-pct", default_value = "10", value_parser=Opts::lb_local_dsq_util_pct_range)]
     lb_local_dsq_util_pct: u8,
+
+    /// Low utilization threshold percentage (0-100) for activating L2-sticky
+    /// dispatch. When set to a non-zero value, the cpdom DSQ dispatch path
+    /// runs a pre-pass that redistributes tasks based on their wake-time
+    /// suggested CPU (see --l2-sticky-mode). The pre-pass only fires when
+    /// the dispatching CPU's average wall-clock utilization is below this
+    /// percentage -- at high util the cache is thrashed by neighbor tasks
+    /// and locality buys nothing. Default is 0 (disabled).
+    #[clap(long = "l2-sticky-util-low-pct", default_value = "0", value_parser=Opts::lb_low_util_pct_range)]
+    l2_sticky_util_low_pct: u8,
+
+    /// Maximum number of cpdom DSQ entries the L2-sticky pre-pass inspects
+    /// per dispatch. Higher values find more locality matches but cost
+    /// more per-dispatch iteration. Range 1-16. Default 4.
+    #[clap(long = "l2-sticky-peek-depth", default_value = "4", value_parser=Opts::l2_sticky_peek_depth_range)]
+    l2_sticky_peek_depth: u8,
+
+    /// Locality-check mode for L2-sticky dispatch.
+    /// l1: match only when the suggested CPU equals this CPU.
+    /// l2: match when the suggested CPU shares a primary with this CPU
+    ///     (captures SMT siblings on SMT systems; identical to l1 on
+    ///     no-SMT platforms). Default: l2.
+    #[clap(long = "l2-sticky-mode", value_enum, default_value_t = L2StickyMode::L2)]
+    l2_sticky_mode: L2StickyMode,
 
     /// Slice duration in microseconds to use for all tasks when pinned tasks
     /// are running on a CPU. Must be between slice-min-us and slice-max-us.
@@ -418,6 +455,10 @@ impl Opts {
 
     fn lb_local_dsq_util_pct_range(s: &str) -> Result<u8, String> {
         number_range(s, 0, 100)
+    }
+
+    fn l2_sticky_peek_depth_range(s: &str) -> Result<u8, String> {
+        number_range(s, 1, 16)
     }
 }
 
@@ -694,6 +735,12 @@ impl<'a> Scheduler<'a> {
         rodata.mig_delta_pct = opts.mig_delta_pct;
         rodata.lb_low_util_wall = ((opts.lb_low_util_pct as u64) << 10) / 100;
         rodata.lb_local_dsq_util_wall = ((opts.lb_local_dsq_util_pct as u64) << 10) / 100;
+        rodata.l2_sticky_util_low_wall = ((opts.l2_sticky_util_low_pct as u64) << 10) / 100;
+        rodata.l2_sticky_peek_depth = opts.l2_sticky_peek_depth;
+        rodata.l2_sticky_mode = match opts.l2_sticky_mode {
+            L2StickyMode::L1 => bpf_intf::LAVD_L2_STICKY_MODE_L1 as u8,
+            L2StickyMode::L2 => bpf_intf::LAVD_L2_STICKY_MODE_L2 as u8,
+        };
         rodata.no_use_em = opts.no_use_em as u8;
         rodata.no_fast_lb = opts.no_fast_lb as u8;
         rodata.no_wake_sync = opts.no_wake_sync;

@@ -237,6 +237,25 @@ const volatile u64	lb_low_util_wall = 0;
 const volatile u64	lb_local_dsq_util_wall = 0;
 
 /*
+ * L2-sticky dispatch knobs.
+ *
+ * l2_sticky_util_low_wall is the per-CPU utilization threshold below
+ * which the L2-sticky pre-pass fires (LAVD_SHIFT fixed-point;
+ * 0 = feature disabled). Pre-scaled by userspace from
+ * --l2-sticky-util-low-pct.
+ *
+ * l2_sticky_peek_depth is the maximum number of cpdom DSQ entries to
+ * inspect per dispatch. Set via --l2-sticky-peek-depth (1..=16).
+ *
+ * l2_sticky_mode selects the locality check:
+ *   LAVD_L2_STICKY_MODE_L1 -- logical-CPU equivalence (sug == cpu)
+ *   LAVD_L2_STICKY_MODE_L2 -- primary-CPU equivalence (default)
+ */
+const volatile u64	l2_sticky_util_low_wall = 0;
+const volatile u8	l2_sticky_peek_depth = 4;
+const volatile u8	l2_sticky_mode = LAVD_L2_STICKY_MODE_L2;
+
+/*
  * Slice time for all tasks when pinned tasks are running on the CPU.
  * When this is set (non-zero), pinned tasks always use per-CPU DSQs and
  * the dispatch logic compares vtimes across DSQs.

@@ -134,6 +134,17 @@ enum {
        LAVD_MSG_TASKC		= 0x1
 };
 
+/*
+ * L2-sticky locality-check modes (see --l2-sticky-mode).
+ *  - L1: logical-CPU equivalence (sug == this_cpu)
+ *  - L2: primary-CPU equivalence (primary(sug) == primary(this_cpu))
+ *        captures SMT siblings; collapses to L1 on no-SMT systems.
+ */
+enum {
+	LAVD_L2_STICKY_MODE_L1	= 0,
+	LAVD_L2_STICKY_MODE_L2	= 1,
+};
+
 struct introspec {
 	volatile u64	arg;
 	volatile u32	cmd;
