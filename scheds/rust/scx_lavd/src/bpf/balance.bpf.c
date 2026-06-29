@@ -519,6 +519,142 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 	return false;
 }
 
+/*
+ * L2-sticky pre-pass over a cpdom (or cpdom-turbulent) DSQ.
+ *
+ * Iterates up to l2_sticky_peek_depth head entries of the source DSQ.
+ * For each task:
+ *   - gate on pinning / migrate-disable / affinity / cpdom-boundary;
+ *   - locality check selected by l2_sticky_mode:
+ *       L1 -> sug == cpu                (logical-CPU stickiness)
+ *       L2 -> primary(sug) == primary(cpu) (primary-CPU equivalence)
+ *   - compute local = locality_match || (sug_turbulent != turbulent);
+ *     the second disjunct treats a turbulent-class mismatch as a
+ *     force-local pull: pushing to a wrong-class sug would violate
+ *     the task's enqueue-time classification. We match the source DSQ
+ *     by construction, so pulling to our own per-CPU DSQ is always
+ *     class-safe.
+ *   - if LOCAL: scx_bpf_dsq_move into cpu_to_dsq(cpu); break. The
+ *     enclosing consume_task's peek/sort/consume decides whether the
+ *     redistributed task wins the vtime sort against the cpdom DSQ
+ *     head.
+ *   - if FOREIGN (same class, locality mismatch): scx_bpf_dsq_move
+ *     into cpu_to_dsq(sug) and kick sug if idle. Continue scanning.
+ *
+ * scx_bpf_dsq_move's FIFO variant keeps the task's dsq_vtime
+ * unchanged, so vtime ordering is preserved across the redistribution.
+ */
+static
+void redistribute_l2_sticky_in_dsq(struct cpu_ctx *cpuc, u32 cpu,
+				   u64 source_dsq_id, bool turbulent)
+{
+	struct task_struct *p;
+	u8 mode = l2_sticky_mode;
+	u8 depth = l2_sticky_peek_depth;
+	u32 my_primary = (mode == LAVD_L2_STICKY_MODE_L2) ?
+			 get_primary_cpu(cpu) : cpu;
+	u8 seen = 0;
+
+	bpf_for_each(scx_dsq, p, source_dsq_id, 0) {
+		task_ctx *taskc;
+		struct cpu_ctx *sug_cpuc;
+		bool sug_turbulent, local;
+		u32 sug_primary;
+		s32 sug;
+
+		if (seen++ >= depth)
+			break;
+
+		/*
+		 * Trust workaround -- same as main.bpf.c's existing
+		 * bpf_for_each(scx_dsq, ...) loop. Acquire a trusted pid
+		 * reference so we can pass p into kfuncs.
+		 */
+		p = bpf_task_from_pid(p->pid);
+		if (!p)
+			continue;
+
+		taskc = get_task_ctx(p);
+		if (!taskc)
+			goto release_continue;
+
+		/* Pinning / migrate-disable gate */
+		if (is_effectively_pinned(taskc) || is_migration_disabled(p))
+			goto release_continue;
+
+		/*
+		 * Read suggested_cpu_id once and re-validate against the
+		 * task's current cpus_ptr (the cached pick may have gone
+		 * stale between enqueue and dispatch). Mirrors the
+		 * stale-pick defense in lavd_enqueue's BTQ drain path.
+		 */
+		sug = (s32)READ_ONCE(taskc->suggested_cpu_id);
+		if (sug < 0 || sug >= (s32)nr_cpu_ids ||
+		    !bpf_cpumask_test_cpu(sug, p->cpus_ptr))
+			goto release_continue;
+
+		sug_cpuc = get_cpu_ctx_id(sug);
+		if (!sug_cpuc)
+			goto release_continue;
+
+		/* Cpdom boundary -- defer cross-cpdom moves to the
+		 * stealer/stealee budget machinery. */
+		if (sug_cpuc->cpdom_id != cpuc->cpdom_id)
+			goto release_continue;
+
+		/* Locality check by mode */
+		if (mode == LAVD_L2_STICKY_MODE_L2)
+			sug_primary = get_primary_cpu(sug);
+		else
+			sug_primary = sug;
+
+		/*
+		 * Combined local predicate. Two reasons to pull to our own
+		 * per-CPU DSQ instead of pushing to sug:
+		 *
+		 *   (a) locality match -- sug shares our primary (L2 mode)
+		 *       or is literally us (L1 mode); the task already
+		 *       wants to run here.
+		 *
+		 *   (b) turbulent-class mismatch -- the task was placed on
+		 *       this DSQ by latency criticality (stable -> cpdom,
+		 *       turbulent -> cpdom_turb); pushing to sug, which is
+		 *       in the wrong class, would violate that placement.
+		 *       Pulling to ourselves is always class-safe because
+		 *       we picked the source DSQ matching our own class.
+		 *
+		 * Turbulent classification therefore takes priority over
+		 * stickiness when the two conflict.
+		 */
+		sug_turbulent = sug_cpuc->lat_headroom <
+				LAVD_LC_LATENCY_SENSITIVE_THRESH;
+		local = (sug_primary == my_primary) ||
+			(sug_turbulent != turbulent);
+
+		if (local) {
+			if (scx_bpf_dsq_move_vtime(BPF_FOR_EACH_ITER, p,
+						   cpu_to_dsq(cpu), 0))
+				__sync_fetch_and_add(&cpuc->nr_l2_sticky_local, 1);
+			bpf_task_release(p);
+			break;
+		}
+
+		/* FOREIGN: same class, different primary. Redistribute to
+		 * sug's per-CPU DSQ and kick if idle. */
+		if (scx_bpf_dsq_move_vtime(BPF_FOR_EACH_ITER, p,
+					   cpu_to_dsq(sug), 0)) {
+			__sync_fetch_and_add(&cpuc->nr_l2_sticky_foreign, 1);
+			if (scx_bpf_test_and_clear_cpu_idle(sug))
+				scx_bpf_kick_cpu(sug, SCX_KICK_IDLE);
+		}
+		bpf_task_release(p);
+		continue;
+
+release_continue:
+		bpf_task_release(p);
+	}
+}
+
 __hidden
 bool consume_task(u64 cpu_dsq_id, u64 cpdom_dsq_id)
 {
@@ -554,6 +690,29 @@ bool consume_task(u64 cpu_dsq_id, u64 cpdom_dsq_id)
 	if (nr_cpdoms > 1 && READ_ONCE(cpdomc->is_stealer) &&
 	    try_to_steal_task(cpdomc))
 		goto x_domain_migration_out;
+
+	/*
+	 * L2-sticky pre-pass: when the feature is enabled AND the local
+	 * CPU is under-loaded enough that cache state matters, redistribute
+	 * tasks based on suggested-CPU locality. Tasks whose locality
+	 * matches this CPU (per --l2-sticky-mode) get pulled to our
+	 * per-CPU DSQ where the regular peek/sort/consume below picks
+	 * them up by vtime; tasks targeting a different primary get
+	 * pushed to that CPU's per-CPU DSQ. The pre-pass also force-pulls
+	 * on turbulent-class mismatch to preserve the cpdom/cpdom_turb
+	 * placement invariant. See redistribute_l2_sticky_in_dsq().
+	 *
+	 * Source DSQ mirrors the existing turbulent split: non-turbulent
+	 * CPUs scan the regular cpdom DSQ; turbulent CPUs scan the
+	 * cpdom-turbulent DSQ.
+	 */
+	if (l2_sticky_enabled() &&
+	    cpuc->avg_util_wall < l2_sticky_util_low_wall) {
+		u64 source_dsq_id = turbulent ?
+			cpdom_turb_dsq_id : cpdom_dsq_id;
+		redistribute_l2_sticky_in_dsq(cpuc, cpuc->cpu_id,
+					      source_dsq_id, turbulent);
+	}
 
 	/*
 	 * Collect eligible DSQs and consume in lowest-vtime-first order.

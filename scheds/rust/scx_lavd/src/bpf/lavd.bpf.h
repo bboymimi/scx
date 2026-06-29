@@ -435,6 +435,8 @@ struct cpu_ctx {
 	 * monitoring and sys_stat aggregation.
 	 */
 	volatile u32	nr_x_migration;
+	volatile u32	nr_l2_sticky_local;	/* L2-sticky pre-pass: pulled a task to our per-CPU DSQ */
+	volatile u32	nr_l2_sticky_foreign;	/* L2-sticky pre-pass: redistributed a task to its suggested CPU's per-CPU DSQ */
 	volatile u32	nr_perf_cri;
 	volatile u32	nr_lat_cri;
 	volatile u32	avg_util_wall;	/* average of the CPU utilization (based on wall clock time) */
