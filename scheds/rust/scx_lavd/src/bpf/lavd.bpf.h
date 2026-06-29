@@ -626,6 +626,9 @@ extern volatile u64		powersave_mode_ns;
 /* Helpers from util.bpf.c for querying CPU/task state. */
 extern const volatile bool	per_cpu_dsq;
 extern const volatile u64	pinned_slice_ns;
+extern const volatile u64	l2_sticky_util_low_wall;
+extern const volatile u8	l2_sticky_peek_depth;
+extern const volatile u8	l2_sticky_mode;
 
 extern volatile bool		reinit_cpumask_for_performance;
 extern volatile bool		no_preemption;
@@ -650,9 +653,22 @@ void reset_task_flag(task_ctx *taskc, u64 flag);
 bool test_task_flag(task_ctx *taskc, u64 flag);
 bool test_task_flag_mask(task_ctx __arg_arena *taskc, u64 flag);
 
+static __always_inline bool l2_sticky_enabled(void)
+{
+	return l2_sticky_util_low_wall > 0;
+}
+
 static __always_inline bool use_per_cpu_dsq(void)
 {
-	return per_cpu_dsq || pinned_slice_ns;
+	/*
+	 * Per-CPU DSQs are active either as the primary dispatch mode
+	 * (--per-cpu-dsq), to host pinned tasks (--pinned-slice-us), or
+	 * as a redistribution target for the L2-sticky dispatch path.
+	 * In the last case, normal enqueue still routes to the cpdom DSQ
+	 * (see get_target_dsq_id), but per-CPU DSQs must be created,
+	 * monitored, and made eligible for consume.
+	 */
+	return per_cpu_dsq || pinned_slice_ns || l2_sticky_enabled();
 }
 
 static __always_inline  bool is_per_cpu_dsq_migratable(void)
