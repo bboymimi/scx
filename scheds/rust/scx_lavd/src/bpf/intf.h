@@ -75,6 +75,8 @@ struct sys_stat {
 	u64	nr_perf_cri;	/* number of performance-critical tasks scheduled */
 	u64	nr_lat_cri;	/* number of latency-critical tasks scheduled */
 	u64	nr_x_migration; /* number of cross domain migration */
+	u64	nr_l2_sticky_local;	/* L2-sticky: tasks pulled to dispatching CPU's per-CPU DSQ */
+	u64	nr_l2_sticky_foreign;	/* L2-sticky: tasks redistributed to a different primary's per-CPU DSQ */
 	u64	nr_big;		/* scheduled on big core */
 	u64	nr_pc_on_big;	/* performance-critical tasks scheduled on big core */
 	u64	nr_lc_on_big;	/* latency-critical tasks scheduled on big core */
