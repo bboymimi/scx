@@ -78,6 +78,10 @@ struct sys_stat {
 	u64	nr_big;		/* scheduled on big core */
 	u64	nr_pc_on_big;	/* performance-critical tasks scheduled on big core */
 	u64	nr_lc_on_big;	/* latency-critical tasks scheduled on big core */
+	u64	nr_warm_scan;	/* warm second pass: scans past a cold head */
+	u64	nr_warm_pull;	/* warm second pass: warm non-head tasks pulled to local DSQ */
+	u64	nr_warm_vtime_reject; /* warm second pass: warm candidates rejected by heat/vtime window */
+	u64	nr_warm_move_fail; /* warm second pass: candidates that lost the move race */
 };
 
 /*

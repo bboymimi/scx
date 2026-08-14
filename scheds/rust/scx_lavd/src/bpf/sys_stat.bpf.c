@@ -66,6 +66,10 @@ struct sys_stat_ctx {
 	u32		nr_perf_cri;
 	u32		nr_lat_cri;
 	u32		nr_x_migration;
+	u32		nr_warm_scan;
+	u32		nr_warm_pull;
+	u32		nr_warm_vtime_reject;
+	u32		nr_warm_move_fail;
 	u32		nr_big;
 	u32		nr_pc_on_big;
 	u32		nr_lc_on_big;
@@ -500,6 +504,18 @@ static void collect_sys_stat(void)
 		c->nr_x_migration += cpuc->nr_x_migration;
 		cpuc->nr_x_migration = 0;
 
+		c->nr_warm_scan += cpuc->nr_warm_scan;
+		cpuc->nr_warm_scan = 0;
+
+		c->nr_warm_pull += cpuc->nr_warm_pull;
+		cpuc->nr_warm_pull = 0;
+
+		c->nr_warm_vtime_reject += cpuc->nr_warm_vtime_reject;
+		cpuc->nr_warm_vtime_reject = 0;
+
+		c->nr_warm_move_fail += cpuc->nr_warm_move_fail;
+		cpuc->nr_warm_move_fail = 0;
+
 		/*
 		 * Accumulate task's latency criticlity information.
 		 *
@@ -696,6 +712,10 @@ static void calc_sys_stat(void)
 		sys_stat.nr_perf_cri >>= 1;
 		sys_stat.nr_lat_cri >>= 1;
 		sys_stat.nr_x_migration >>= 1;
+		sys_stat.nr_warm_scan >>= 1;
+		sys_stat.nr_warm_pull >>= 1;
+		sys_stat.nr_warm_vtime_reject >>= 1;
+		sys_stat.nr_warm_move_fail >>= 1;
 		sys_stat.nr_big >>= 1;
 		sys_stat.nr_pc_on_big >>= 1;
 		sys_stat.nr_lc_on_big >>= 1;
@@ -710,6 +730,10 @@ static void calc_sys_stat(void)
 	sys_stat.nr_perf_cri += c->nr_perf_cri;
 	sys_stat.nr_lat_cri += c->nr_lat_cri;
 	sys_stat.nr_x_migration += c->nr_x_migration;
+	sys_stat.nr_warm_scan += c->nr_warm_scan;
+	sys_stat.nr_warm_pull += c->nr_warm_pull;
+	sys_stat.nr_warm_vtime_reject += c->nr_warm_vtime_reject;
+	sys_stat.nr_warm_move_fail += c->nr_warm_move_fail;
 	sys_stat.nr_big += c->nr_big;
 	sys_stat.nr_pc_on_big += c->nr_pc_on_big;
 	sys_stat.nr_lc_on_big += c->nr_lc_on_big;

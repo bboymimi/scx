@@ -452,6 +452,10 @@ struct cpu_ctx {
 	 * monitoring and sys_stat aggregation.
 	 */
 	volatile u32	nr_x_migration;
+	volatile u32	nr_warm_scan;		/* warm second pass: head cold, non-head scan ran */
+	volatile u32	nr_warm_pull;		/* warm second pass: warm non-head task pulled to local DSQ */
+	volatile u32	nr_warm_vtime_reject;	/* warm second pass: warm candidate failed heat/vtime-window bound */
+	volatile u32	nr_warm_move_fail;	/* warm second pass: candidate passed policy but lost the move race */
 	volatile u32	nr_perf_cri;
 	volatile u32	nr_lat_cri;
 	volatile u32	avg_util_wall;	/* average of the CPU utilization (based on wall clock time) */

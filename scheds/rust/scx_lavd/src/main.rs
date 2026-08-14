@@ -911,6 +911,10 @@ impl<'a> Scheduler<'a> {
                 let pc_pc = Self::get_pc(st.nr_perf_cri, nr_sched);
                 let pc_lc = Self::get_pc(st.nr_lat_cri, nr_sched);
                 let pc_x_migration = Self::get_pc(st.nr_x_migration, nr_sched);
+                let nr_warm_scan = st.nr_warm_scan;
+                let nr_warm_pull = st.nr_warm_pull;
+                let nr_warm_vtime_reject = st.nr_warm_vtime_reject;
+                let nr_warm_move_fail = st.nr_warm_move_fail;
                 let nr_stealee = st.nr_stealee;
                 let nr_big = st.nr_big;
                 let pc_big = Self::get_pc(nr_big, nr_sched);
@@ -933,6 +937,10 @@ impl<'a> Scheduler<'a> {
                     pc_pc,
                     pc_lc,
                     pc_x_migration,
+                    nr_warm_scan,
+                    nr_warm_pull,
+                    nr_warm_vtime_reject,
+                    nr_warm_move_fail,
                     nr_stealee,
                     pc_big,
                     pc_pc_on_big,

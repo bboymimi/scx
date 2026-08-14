@@ -614,6 +614,12 @@ bool try_warm_second_pass(struct cpu_ctx *cpuc, s32 cpu, u64 dsq_id, u64 now)
 				return false;
 			}
 
+			/*
+			 * Head is cold and not overdue: the non-head scan
+			 * actually runs.
+			 */
+			cpuc->nr_warm_scan++;
+
 			bpf_task_release(p);
 			continue;
 		}
@@ -644,8 +650,11 @@ bool try_warm_second_pass(struct cpu_ctx *cpuc, s32 cpu, u64 dsq_id, u64 now)
 		 * earn a reorder privilege.
 		 */
 		heat = task_cpu_warmth(taskc, cpu, now);
-		if (heat < LAVD_SCALE / 4)
+		if (heat < LAVD_SCALE / 4) {
+			if (heat)
+				cpuc->nr_warm_vtime_reject++;
 			goto next;
+		}
 
 		/*
 		 * Vtime window in LOGICAL units. dsq_vtime is a logical
@@ -666,8 +675,10 @@ bool try_warm_second_pass(struct cpu_ctx *cpuc, s32 cpu, u64 dsq_id, u64 now)
 		window >>= LAVD_SHIFT;
 		window = (window * heat) >> LAVD_SHIFT;
 
-		if ((u64)time_delta(vtime, head_vtime) > window)
+		if ((u64)time_delta(vtime, head_vtime) > window) {
+			cpuc->nr_warm_vtime_reject++;
 			goto next;
+		}
 
 		/*
 		 * Optimistic move: the kfunc revalidates DSQ membership
@@ -679,9 +690,11 @@ bool try_warm_second_pass(struct cpu_ctx *cpuc, s32 cpu, u64 dsq_id, u64 now)
 		 */
 		if (scx_bpf_dsq_move_vtime(BPF_FOR_EACH_ITER, p,
 					   cpu_to_dsq(cpu), 0)) {
+			cpuc->nr_warm_pull++;
 			bpf_task_release(p);
 			return true;
 		}
+		cpuc->nr_warm_move_fail++;
 next:
 		bpf_task_release(p);
 	}
