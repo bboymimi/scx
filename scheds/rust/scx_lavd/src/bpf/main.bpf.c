@@ -230,6 +230,17 @@ const volatile u8	no_fast_lb = 0;
 const volatile u64	warm_cpu_ns = 0;
 
 /*
+ * Warm-task second pass at domain-DSQ dispatch. When > 0, before consuming
+ * the head of a domain (steady or turbulent) DSQ, scan up to this many head
+ * entries (the head included) for a task whose cache/TLB state is still warm
+ * on the dispatching CPU and pull it to the CPU's per-CPU DSQ instead,
+ * provided its virtual deadline is within a bounded window of the head's.
+ * Effective only when per-CPU DSQs are in use (use_per_cpu_dsq()).
+ * 0 disables. Set via --warm-dispatch-depth.
+ */
+const volatile u8	warm_dispatch_depth = 0;
+
+/*
  * Skip periodic load balancing when average system utilization is below this
  * threshold. The value is pre-scaled by userspace. 0 = disabled.
  * Default: p2s(25) = 256.

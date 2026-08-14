@@ -20,6 +20,7 @@
 extern const volatile u8	mig_delta_pct;
 extern const volatile u8	no_fast_lb;
 extern const volatile u64	lb_low_util_wall;
+extern const volatile u8	warm_dispatch_depth;
 
 u64 __attribute__ ((noinline)) calc_mig_delta(u64 avg_load_invr, int nz_qlen,
 					      u64 mig_delta_factor)
@@ -522,6 +523,198 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 	return false;
 }
 
+/*
+ * Second-pass warm-task pull over a domain (steady or turbulent) DSQ.
+ *
+ * David's warmth (task_cpu_warmth()) acts only at wake time; a task that
+ * falls into a domain DSQ loses its warmth affinity at dispatch because
+ * consume_dsq() takes the head strictly in vtime order. This second pass
+ * scans up to warm_dispatch_depth head entries (the head included, so
+ * depth 2 = one non-head opportunity) and pulls a still-warm task to this
+ * CPU's per-CPU DSQ instead of the cold head, provided its virtual
+ * deadline is within a bounded window of the head's.
+ *
+ * The pull destination is deliberately the per-CPU user DSQ,
+ * cpu_to_dsq(cpu), never SCX_DSQ_LOCAL. A user-DSQ-to-user-DSQ iterator
+ * move only relinks the task under the source DSQ lock, while an
+ * iterator move targeting SCX_DSQ_LOCAL forces scx_dsq_move() to
+ * migrate the task -- taking task_rq and local rq raw spinlocks with
+ * IRQs disabled in the middle of ops.dispatch() -- which hard-froze the
+ * host; see the commit message for the kernel-side analysis.
+ *
+ * Returns true when a warm task was moved to this CPU's per-CPU DSQ
+ * (the caller should consume that DSQ next); false when the normal
+ * head consume should proceed.
+ */
+static __attribute__((noinline))
+bool try_warm_second_pass(struct cpu_ctx *cpuc, s32 cpu, u64 dsq_id, u64 now)
+{
+	struct task_struct *p;
+	u64 head_vtime = 0;
+	bool head_seen = false;
+	u8 depth = warm_dispatch_depth;
+	u8 seen = 0;
+
+	/*
+	 * With zero or one queued task there is no non-head candidate, so
+	 * the normal head consume is strictly better.
+	 */
+	if (scx_bpf_dsq_nr_queued(dsq_id) <= 1)
+		return false;
+
+	bpf_for_each(scx_dsq, p, dsq_id, 0) {
+		task_ctx *taskc;
+		u64 vtime, heat, window;
+
+		if (seen++ >= depth)
+			break;
+
+		/*
+		 * dsq_vtime can be read from the iterator pointer directly,
+		 * but the kfunc calls below need a trusted reference. Reuse
+		 * the bpf_task_from_pid() trust workaround from the
+		 * bpf_for_each(scx_dsq, ...) loop in lavd_dispatch().
+		 */
+		vtime = p->scx.dsq_vtime;
+
+		p = bpf_task_from_pid(p->pid);
+		if (!p)
+			continue;
+
+		taskc = get_task_ctx(p);
+		if (!taskc) {
+			bpf_task_release(p);
+			continue;
+		}
+
+		if (!head_seen) {
+			head_seen = true;
+			head_vtime = vtime;
+
+			/*
+			 * Anti-starvation: when the head's logical deadline
+			 * has already passed the current logical clock, it
+			 * must be consumed right away -- nobody gets a
+			 * reordering privilege over an overdue head.
+			 */
+			if (time_delta(READ_ONCE(cur_logical_clk),
+				       head_vtime) > 0) {
+				bpf_task_release(p);
+				return false;
+			}
+
+			/*
+			 * If the head itself is warm on this CPU, the normal
+			 * head consume already gives us locality. Stop
+			 * scanning; this is not a pull.
+			 */
+			if (task_cpu_warmth(taskc, cpu, now) >=
+			    LAVD_SCALE / 4) {
+				bpf_task_release(p);
+				return false;
+			}
+
+			bpf_task_release(p);
+			continue;
+		}
+
+		/*
+		 * Non-head candidate: it must be allowed to run here. An
+		 * effectively pinned or migrate-disabled task is eligible
+		 * only when it is already on this CPU.
+		 */
+		if (!bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
+			goto next;
+
+		if ((is_effectively_pinned(taskc) ||
+		     is_migration_disabled(p)) &&
+		    scx_bpf_task_cpu(p) != cpu)
+			goto next;
+
+		/*
+		 * Mirror pass 1's latency-criticality gate (idle.bpf.c):
+		 * warmth-based stickiness applies to latency-tolerant tasks
+		 * only.
+		 */
+		if (taskc->lat_cri >= sys_stat.thr_lat_cri)
+			goto next;
+
+		/*
+		 * Require substantial heat: near-expired warmth must not
+		 * earn a reorder privilege.
+		 */
+		heat = task_cpu_warmth(taskc, cpu, now);
+		if (heat < LAVD_SCALE / 4)
+			goto next;
+
+		/*
+		 * Vtime window in LOGICAL units. dsq_vtime is a logical
+		 * deadline, not wall ns: calc_virtual_deadline_delta()
+		 * (lat_cri.bpf.c) scales runtime by the greedy penalty and
+		 * lat_cri, then shifts by LAVD_SHIFT. So bound the reorder
+		 * by mirroring that transform applied to one slice_wall of
+		 * wall time with a neutral greedy penalty (LAVD_SCALE) --
+		 * i.e., the deadline delta a task with the candidate's
+		 * lat_cri would receive for one slice -- scaled by heat so
+		 * hotter tasks get more slack. calc_compete_window()
+		 * (lat_cri.bpf.c) is not reusable here: it is the global
+		 * wake-time boost window, with no per-task lat_cri or heat
+		 * dimension.
+		 */
+		window = (sys_stat.slice_wall * LAVD_SCALE) /
+			 max(taskc->lat_cri, 1);
+		window >>= LAVD_SHIFT;
+		window = (window * heat) >> LAVD_SHIFT;
+
+		if ((u64)time_delta(vtime, head_vtime) > window)
+			goto next;
+
+		/*
+		 * Optimistic move: the kfunc revalidates DSQ membership
+		 * under the DSQ lock. A false return means another CPU won
+		 * the race; keep scanning and fall through to the normal
+		 * consume. The vtime variant is mandatory (the per-CPU DSQ
+		 * is vtime-ordered) and, with no scx_bpf_dsq_move_set_vtime()
+		 * override, keeps p->scx.dsq_vtime intact.
+		 */
+		if (scx_bpf_dsq_move_vtime(BPF_FOR_EACH_ITER, p,
+					   cpu_to_dsq(cpu), 0)) {
+			bpf_task_release(p);
+			return true;
+		}
+next:
+		bpf_task_release(p);
+	}
+
+	return false;
+}
+
+/*
+ * Is @dsq_id a domain DSQ on which the warm second pass may run?
+ * A turbulent-class CPU consuming the steady DSQ is an anti-starvation
+ * path, so keep it strict head order -- no scan.
+ */
+static __always_inline
+bool warm_second_pass_ok(u64 dsq_id, u64 cpdom_dsq_id, u64 cpdom_turb_dsq_id,
+			 bool turbulent)
+{
+	if (!warm_dispatch_depth)
+		return false;
+
+	/*
+	 * The pull destination is the per-CPU DSQ; when per-CPU DSQs are
+	 * not in use there is nowhere safe to pull to, so the pass is a
+	 * no-op.
+	 */
+	if (!use_per_cpu_dsq())
+		return false;
+
+	if (dsq_id == cpdom_dsq_id)
+		return !turbulent;
+
+	return dsq_id == cpdom_turb_dsq_id;
+}
+
 __hidden
 bool consume_task(u64 cpu_dsq_id, u64 cpdom_dsq_id)
 {
@@ -581,12 +774,43 @@ bool consume_task(u64 cpu_dsq_id, u64 cpdom_dsq_id)
 
 	sort_dsqs(&dsqs[0], &dsqs[1], &dsqs[2]);
 
-	if (dsqs[0].eligible && consume_dsq(cpdomc, dsqs[0].dsq_id))
-		return true;
-	if (dsqs[1].eligible && consume_dsq(cpdomc, dsqs[1].dsq_id))
-		return true;
-	if (dsqs[2].eligible && consume_dsq(cpdomc, dsqs[2].dsq_id))
-		return true;
+	/*
+	 * Before consuming the head of a domain DSQ, give still-warm tasks
+	 * near the head a second chance to run on the CPU whose cache and
+	 * TLB state they built up: a warm task is pulled into this CPU's
+	 * per-CPU DSQ, which is then consumed right away. If the pulled
+	 * task is lost to a stealer in between, fall through to the normal
+	 * head consume. See try_warm_second_pass().
+	 */
+	u64 now = warm_dispatch_depth ? scx_bpf_now() : 0;
+
+	if (dsqs[0].eligible) {
+		if (warm_second_pass_ok(dsqs[0].dsq_id, cpdom_dsq_id,
+					cpdom_turb_dsq_id, turbulent) &&
+		    try_warm_second_pass(cpuc, cpuc->cpu_id, dsqs[0].dsq_id, now) &&
+		    consume_dsq(cpdomc, cpu_dsq_id))
+			return true;
+		if (consume_dsq(cpdomc, dsqs[0].dsq_id))
+			return true;
+	}
+	if (dsqs[1].eligible) {
+		if (warm_second_pass_ok(dsqs[1].dsq_id, cpdom_dsq_id,
+					cpdom_turb_dsq_id, turbulent) &&
+		    try_warm_second_pass(cpuc, cpuc->cpu_id, dsqs[1].dsq_id, now) &&
+		    consume_dsq(cpdomc, cpu_dsq_id))
+			return true;
+		if (consume_dsq(cpdomc, dsqs[1].dsq_id))
+			return true;
+	}
+	if (dsqs[2].eligible) {
+		if (warm_second_pass_ok(dsqs[2].dsq_id, cpdom_dsq_id,
+					cpdom_turb_dsq_id, turbulent) &&
+		    try_warm_second_pass(cpuc, cpuc->cpu_id, dsqs[2].dsq_id, now) &&
+		    consume_dsq(cpdomc, cpu_dsq_id))
+			return true;
+		if (consume_dsq(cpdomc, dsqs[2].dsq_id))
+			return true;
+	}
 
 	/*
 	 * If there is no task in the associated DSQ, traverse neighbor

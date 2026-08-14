@@ -153,6 +153,17 @@ struct Opts {
     #[clap(long = "warm-cpu-us", default_value = "0")]
     warm_cpu_us: u64,
 
+    /// Warm-task second pass at domain-DSQ dispatch. Maximum number of head
+    /// entries of a domain DSQ (the head included, so 2 gives one non-head
+    /// opportunity) to scan for a task whose cache/TLB state is still warm on
+    /// the dispatching CPU. A warm task within a bounded virtual-deadline
+    /// window of the head is pulled to the dispatching CPU's per-CPU DSQ
+    /// instead of the head. Effective only when per-CPU DSQs are in use
+    /// (--per-cpu-dsq, --pinned-slice-us, or --warm-cpu-us). Range: 0-8.
+    /// 0 disables (default). This is an experimental feature.
+    #[clap(long = "warm-dispatch-depth", default_value = "0", value_parser=Opts::warm_dispatch_depth_range)]
+    warm_dispatch_depth: u8,
+
     /// Low utilization threshold percentage (0-100) for periodic load balancing.
     /// When set to a non-zero value, periodic load balancing is skipped when
     /// the maximum per-domain utilization is below this percentage.
@@ -428,6 +439,10 @@ impl Opts {
         number_range(s, 0, 100)
     }
 
+    fn warm_dispatch_depth_range(s: &str) -> Result<u8, String> {
+        number_range(s, 0, 8)
+    }
+
     fn lb_low_util_pct_range(s: &str) -> Result<u8, String> {
         number_range(s, 0, 100)
     }
@@ -698,6 +713,7 @@ impl<'a> Scheduler<'a> {
         rodata.lat_load_target_pct = opts.lat_load_target_pct;
         rodata.mig_delta_pct = opts.mig_delta_pct;
         rodata.warm_cpu_ns = opts.warm_cpu_us * 1000;
+        rodata.warm_dispatch_depth = opts.warm_dispatch_depth;
         rodata.lb_low_util_wall = ((opts.lb_low_util_pct as u64) << 10) / 100;
         rodata.lb_local_dsq_util_wall = ((opts.lb_local_dsq_util_pct as u64) << 10) / 100;
         rodata.no_use_em = opts.no_use_em as u8;
