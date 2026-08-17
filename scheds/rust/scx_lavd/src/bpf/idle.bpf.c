@@ -19,6 +19,7 @@
 
 extern const volatile u8	no_fast_lb;
 extern const volatile u64	warm_cpu_ns;
+extern const volatile u8	warm_path;
 
 struct sticky_ctx {
 	/*
@@ -771,15 +772,28 @@ s32 pick_idle_cpu(struct pick_ctx *ctx, bool *is_idle)
 	 * are still warm. Take it if idle or, if it is busy but predicted to
 	 * free up within the warmth-extended budget.
 	 *
+	 * @warm_path selects which of the two paths may be taken; it is a
+	 * measurement knob and defaults to LAVD_WARM_PATH_BOTH, which evaluates
+	 * both. When a path is disabled, control falls through to the normal
+	 * sticky/idle search exactly as it does when that path does not fire.
+	 *
 	 * TODO: on asymmetric CPUs (big/LITTLE), stick to prev_cpu only when its
 	 * core type matches the task type; otherwise fall through to allow a
 	 * cross-cluster migration.
 	 */
-	if (warm_cpu_ns && ctx->prev_cpu >= 0 &&
+	if (warm_cpu_ns && warm_path != LAVD_WARM_PATH_NONE &&
+	    ctx->prev_cpu >= 0 &&
 	    bpf_cpumask_test_cpu(ctx->prev_cpu, cast_mask(ctx->active)) &&
 	    bpf_cpumask_test_cpu(ctx->prev_cpu, ctx->p->cpus_ptr)) {
-		/* Idle-stick path. */
-		if (scx_bpf_test_and_clear_cpu_idle(ctx->prev_cpu)) {
+		/*
+		 * Idle-stick path. scx_bpf_test_and_clear_cpu_idle() consumes
+		 * the CPU's idle state, so the call itself -- not just its
+		 * result -- must be skipped when this path is disabled.
+		 * Otherwise the wait-only mode would corrupt the subsequent
+		 * idle-CPU selection.
+		 */
+		if (warm_path != LAVD_WARM_PATH_WAIT &&
+		    scx_bpf_test_and_clear_cpu_idle(ctx->prev_cpu)) {
 			cpu = ctx->prev_cpu;
 			*is_idle = true;
 			if (ctx->cpuc_cur)
@@ -788,7 +802,8 @@ s32 pick_idle_cpu(struct pick_ctx *ctx, bool *is_idle)
 		}
 
 		/* Wait-stick path. */
-		if (warm_cpu_wait_stick(ctx)) {
+		if (warm_path != LAVD_WARM_PATH_IDLE &&
+		    warm_cpu_wait_stick(ctx)) {
 			cpu = ctx->prev_cpu;
 			/*
 			 * Previous CPU is busy, so wait on the previous CPU's

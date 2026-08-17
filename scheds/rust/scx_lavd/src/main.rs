@@ -29,6 +29,7 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
+use clap::ValueEnum;
 use clap_num::number_range;
 use cpu_order::CpuOrder;
 use cpu_order::PerfCpuOrder;
@@ -70,6 +71,31 @@ use tracing::{debug, info, warn};
 use tracing_subscriber::filter::EnvFilter;
 
 const SCHEDULER_NAME: &str = "scx_lavd";
+
+/// Which warm-CPU stickiness path(s) pick_idle_cpu() may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum WarmPath {
+    /// Evaluate both paths. This is the normal behavior.
+    Both,
+    /// Only stick to the previous CPU when it is idle right now.
+    Idle,
+    /// Only stick to the previous CPU by waiting for it to free up.
+    Wait,
+    /// Never take a warm-CPU decision.
+    None,
+}
+
+impl WarmPath {
+    fn to_bpf(self) -> u8 {
+        (match self {
+            WarmPath::Both => LAVD_WARM_PATH_BOTH,
+            WarmPath::Idle => LAVD_WARM_PATH_IDLE,
+            WarmPath::Wait => LAVD_WARM_PATH_WAIT,
+            WarmPath::None => LAVD_WARM_PATH_NONE,
+        }) as u8
+    }
+}
+
 /// scx_lavd: Latency-criticality Aware Virtual Deadline (LAVD) scheduler
 ///
 /// The rust part is minimal. It processes command line options and logs out
@@ -152,6 +178,33 @@ struct Opts {
     /// that CPU extends the budget up to 2x. 0 disables (default).
     #[clap(long = "warm-cpu-us", default_value = "0")]
     warm_cpu_us: u64,
+
+    /// Which warm-CPU stickiness path is allowed to fire when --warm-cpu-us is
+    /// set. This is an experiment/measurement knob for decomposing the warm-CPU
+    /// mechanism into its two independent parts, not a tuning knob.
+    ///   both: evaluate both paths -- the normal behavior (default).
+    ///   idle: only take the previous CPU when it is idle right now; never
+    ///         wait for it.
+    ///   wait: only take the previous CPU by waiting within the
+    ///         warmth-extended budget; never take the idle fast path.
+    ///   none: never take a warm-CPU decision, while warm_cpu_ns itself stays
+    ///         non-zero.
+    ///
+    /// 'none' isolates the cost of the warm-CPU infrastructure (per-CPU DSQs,
+    /// which are then not migratable) only when nothing else already enables
+    /// it. use_per_cpu_dsq() is per_cpu_dsq || pinned_slice_ns || warm_cpu_ns
+    /// and --pinned-slice-us defaults to 5000, so under default options
+    /// per-CPU DSQs are already on and 'none' is a bit-for-bit replicate of
+    /// --warm-cpu-us 0 -- a run-to-run noise estimate, not an infrastructure
+    /// control. Pair it with --pinned-slice-us 0, and without --per-cpu-dsq, to
+    /// make warm_cpu_ns the only thing toggling the infrastructure.
+    #[clap(
+        long = "warm-path",
+        value_enum,
+        default_value_t = WarmPath::Both,
+        verbatim_doc_comment
+    )]
+    warm_path: WarmPath,
 
     /// Low utilization threshold percentage (0-100) for periodic load balancing.
     /// When set to a non-zero value, periodic load balancing is skipped when
@@ -410,6 +463,41 @@ impl Opts {
                 "Pinned task slice mode is enabled ({} us). Pinned tasks will use per-CPU DSQs.",
                 pinned_slice
             );
+            }
+        }
+
+        if self.warm_cpu_us == 0 {
+            if self.warm_path != WarmPath::Both {
+                info!("--warm-path has no effect while --warm-cpu-us is 0.");
+            }
+        } else if self.warm_path == WarmPath::None {
+            /*
+             * warm_cpu_ns is only one of the three things that turn per-CPU
+             * DSQs on, so --warm-path=none measures the infrastructure only
+             * when it is the one holding them on. Say so, otherwise the cell
+             * gets read as an infrastructure cost when it is a replicate of
+             * the --warm-cpu-us=0 baseline.
+             */
+            let held_on_by = if self.per_cpu_dsq {
+                Some("--per-cpu-dsq")
+            } else if self.pinned_slice_us.unwrap_or(0) != 0 {
+                Some("--pinned-slice-us")
+            } else {
+                None
+            };
+
+            match held_on_by {
+                Some(opt) => warn!(
+                    "--warm-path=none is a replicate of --warm-cpu-us=0, not an \
+                     infrastructure control: {} already enables per-CPU DSQs. Pass \
+                     --pinned-slice-us 0 without --per-cpu-dsq to make the warm-CPU \
+                     infrastructure a real variable.",
+                    opt
+                ),
+                None => info!(
+                    "--warm-path=none: no warm-CPU decision is taken, but per-CPU DSQs \
+                     stay enabled by --warm-cpu-us."
+                ),
             }
         }
 
@@ -698,6 +786,7 @@ impl<'a> Scheduler<'a> {
         rodata.lat_load_target_pct = opts.lat_load_target_pct;
         rodata.mig_delta_pct = opts.mig_delta_pct;
         rodata.warm_cpu_ns = opts.warm_cpu_us * 1000;
+        rodata.warm_path = opts.warm_path.to_bpf();
         rodata.lb_low_util_wall = ((opts.lb_low_util_pct as u64) << 10) / 100;
         rodata.lb_local_dsq_util_wall = ((opts.lb_local_dsq_util_pct as u64) << 10) / 100;
         rodata.no_use_em = opts.no_use_em as u8;

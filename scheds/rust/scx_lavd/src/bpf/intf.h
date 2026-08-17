@@ -45,6 +45,18 @@ enum {
 };
 
 /*
+ * Which of the two warm-CPU stickiness paths pick_idle_cpu() may take. This
+ * is a measurement knob (--warm-path) for decomposing the warm-CPU mechanism;
+ * LAVD_WARM_PATH_BOTH is the default and is the upstream behavior.
+ */
+enum {
+	LAVD_WARM_PATH_BOTH		= 0, /* idle-stick, then wait-stick */
+	LAVD_WARM_PATH_IDLE		= 1, /* idle-stick only */
+	LAVD_WARM_PATH_WAIT		= 2, /* wait-stick only */
+	LAVD_WARM_PATH_NONE		= 3, /* neither path is evaluated */
+};
+
+/*
  * System-wide stats
  */
 struct sys_stat {

@@ -230,6 +230,13 @@ const volatile u8	no_fast_lb = 0;
 const volatile u64	warm_cpu_ns = 0;
 
 /*
+ * Which warm-CPU stickiness path(s) pick_idle_cpu() may take. A measurement
+ * knob for decomposing the warm-CPU mechanism; the default, BOTH, is the
+ * normal behavior. Set via --warm-path.
+ */
+const volatile u8	warm_path = LAVD_WARM_PATH_BOTH;
+
+/*
  * Skip periodic load balancing when average system utilization is below this
  * threshold. The value is pre-scaled by userspace. 0 = disabled.
  * Default: p2s(25) = 256.
