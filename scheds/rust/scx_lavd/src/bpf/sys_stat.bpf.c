@@ -66,6 +66,12 @@ struct sys_stat_ctx {
 	u32		nr_perf_cri;
 	u32		nr_lat_cri;
 	u32		nr_x_migration;
+	u32		nr_warm_idle_stick;
+	u32		nr_warm_wait_stick;
+	u32		nr_warm_wait_stick_heat;
+	u32		nr_warm_wait_reject_latcri;
+	u32		nr_warm_wait_reject_est;
+	u32		nr_warm_wait_reject_budget;
 	u32		nr_big;
 	u32		nr_pc_on_big;
 	u32		nr_lc_on_big;
@@ -500,6 +506,24 @@ static void collect_sys_stat(void)
 		c->nr_x_migration += cpuc->nr_x_migration;
 		cpuc->nr_x_migration = 0;
 
+		c->nr_warm_idle_stick += cpuc->nr_warm_idle_stick;
+		cpuc->nr_warm_idle_stick = 0;
+
+		c->nr_warm_wait_stick += cpuc->nr_warm_wait_stick;
+		cpuc->nr_warm_wait_stick = 0;
+
+		c->nr_warm_wait_stick_heat += cpuc->nr_warm_wait_stick_heat;
+		cpuc->nr_warm_wait_stick_heat = 0;
+
+		c->nr_warm_wait_reject_latcri += cpuc->nr_warm_wait_reject_latcri;
+		cpuc->nr_warm_wait_reject_latcri = 0;
+
+		c->nr_warm_wait_reject_est += cpuc->nr_warm_wait_reject_est;
+		cpuc->nr_warm_wait_reject_est = 0;
+
+		c->nr_warm_wait_reject_budget += cpuc->nr_warm_wait_reject_budget;
+		cpuc->nr_warm_wait_reject_budget = 0;
+
 		/*
 		 * Accumulate task's latency criticlity information.
 		 *
@@ -696,6 +720,12 @@ static void calc_sys_stat(void)
 		sys_stat.nr_perf_cri >>= 1;
 		sys_stat.nr_lat_cri >>= 1;
 		sys_stat.nr_x_migration >>= 1;
+		sys_stat.nr_warm_idle_stick >>= 1;
+		sys_stat.nr_warm_wait_stick >>= 1;
+		sys_stat.nr_warm_wait_stick_heat >>= 1;
+		sys_stat.nr_warm_wait_reject_latcri >>= 1;
+		sys_stat.nr_warm_wait_reject_est >>= 1;
+		sys_stat.nr_warm_wait_reject_budget >>= 1;
 		sys_stat.nr_big >>= 1;
 		sys_stat.nr_pc_on_big >>= 1;
 		sys_stat.nr_lc_on_big >>= 1;
@@ -710,6 +740,12 @@ static void calc_sys_stat(void)
 	sys_stat.nr_perf_cri += c->nr_perf_cri;
 	sys_stat.nr_lat_cri += c->nr_lat_cri;
 	sys_stat.nr_x_migration += c->nr_x_migration;
+	sys_stat.nr_warm_idle_stick += c->nr_warm_idle_stick;
+	sys_stat.nr_warm_wait_stick += c->nr_warm_wait_stick;
+	sys_stat.nr_warm_wait_stick_heat += c->nr_warm_wait_stick_heat;
+	sys_stat.nr_warm_wait_reject_latcri += c->nr_warm_wait_reject_latcri;
+	sys_stat.nr_warm_wait_reject_est += c->nr_warm_wait_reject_est;
+	sys_stat.nr_warm_wait_reject_budget += c->nr_warm_wait_reject_budget;
 	sys_stat.nr_big += c->nr_big;
 	sys_stat.nr_pc_on_big += c->nr_pc_on_big;
 	sys_stat.nr_lc_on_big += c->nr_lc_on_big;

@@ -75,6 +75,12 @@ struct sys_stat {
 	u64	nr_perf_cri;	/* number of performance-critical tasks scheduled */
 	u64	nr_lat_cri;	/* number of latency-critical tasks scheduled */
 	u64	nr_x_migration; /* number of cross domain migration */
+	u64	nr_warm_idle_stick;	/* warm-CPU stickiness: previous CPU was idle */
+	u64	nr_warm_wait_stick;	/* warm-CPU stickiness: waited for the previous CPU */
+	u64	nr_warm_wait_stick_heat; /* subset of the above accepted only thanks to warmth */
+	u64	nr_warm_wait_reject_latcri; /* wait-stick declined: task too latency-critical */
+	u64	nr_warm_wait_reject_est; /* wait-stick declined: no usable stop-time prediction */
+	u64	nr_warm_wait_reject_budget; /* wait-stick declined: wait exceeds the warmth budget */
 	u64	nr_big;		/* scheduled on big core */
 	u64	nr_pc_on_big;	/* performance-critical tasks scheduled on big core */
 	u64	nr_lc_on_big;	/* latency-critical tasks scheduled on big core */

@@ -454,6 +454,21 @@ struct cpu_ctx {
 	volatile u32	nr_x_migration;
 	volatile u32	nr_perf_cri;
 	volatile u32	nr_lat_cri;
+	/*
+	 * Warm-CPU stickiness paths taken in pick_idle_cpu(). The idle-stick
+	 * path takes the previous CPU because it is idle right now; the
+	 * wait-stick path takes it because it is predicted to free up within
+	 * the warmth-extended budget. nr_warm_wait_stick_heat is the subset of
+	 * nr_warm_wait_stick that only fit once warmth extended the budget --
+	 * the only accepts the warmth computation actually pays for. The three
+	 * reject counters split why the wait-stick path was declined.
+	 */
+	volatile u32	nr_warm_idle_stick;
+	volatile u32	nr_warm_wait_stick;
+	volatile u32	nr_warm_wait_stick_heat;
+	volatile u32	nr_warm_wait_reject_latcri;
+	volatile u32	nr_warm_wait_reject_est;
+	volatile u32	nr_warm_wait_reject_budget;
 	volatile u32	avg_util_wall;	/* average of the CPU utilization (based on wall clock time) */
 	volatile u32	cur_util_wall;	/* CPU utilization of the current interval (based on wall clock time) */
 	volatile u32	avg_util_invr;	/* average of the scaled CPU utilization, which is capacity and frequency invariant. */
@@ -716,24 +731,65 @@ u32 preemption_vulnerability(u16 normalized_lat_cri, u32 util_est)
 }
 
 /*
+ * Outcome of a wait-stick evaluation: the decision plus the reason for it. A
+ * bare boolean cannot tell an accept that needed the warmth bonus from one
+ * that would have fit the base budget anyway, and that difference is the only
+ * evidence that the warmth computation is load-bearing at all.
+ */
+enum warm_wait_res {
+	LAVD_WARM_WAIT_NO_EST,		/* no usable stop-time prediction */
+	LAVD_WARM_WAIT_OVER,		/* wait exceeds the warmth-extended budget */
+	LAVD_WARM_WAIT_OK_BASE,		/* wait fits warm_cpu_ns; warmth not needed */
+	LAVD_WARM_WAIT_OK_HEAT,		/* wait fits only the warmth-extended budget */
+};
+
+static __always_inline bool warm_wait_accepted(int res)
+{
+	return res == LAVD_WARM_WAIT_OK_BASE || res == LAVD_WARM_WAIT_OK_HEAT;
+}
+
+/*
  * Does the predicted wait for @cpu to free up fit the task's warmth-extended
  * budget? The base budget is warm_cpu_ns; warm cache and TLB state on @cpu
  * stretch it up to 2x, so a task still warm there waits rather than migrate to
  * a cold CPU and refill. The wait is the time until the running task stops plus
  * the service time of tasks already queued ahead on that CPU's DSQ.
+ *
+ * Returns an enum warm_wait_res so the caller can both decide (via
+ * warm_wait_accepted()) and attribute the outcome.
  */
 static __always_inline
-bool warm_cpu_wait_ok(task_ctx *taskc, s32 cpu, u64 now)
+int warm_cpu_wait_eval(task_ctx *taskc, s32 cpu, u64 now)
 {
 	struct cpu_ctx *cpuc = get_cpu_ctx_id(cpu);
 	u64 heat, budget, est, wait;
 
 	if (!cpuc)
-		return false;
+		return LAVD_WARM_WAIT_NO_EST;
 
-	heat = task_cpu_warmth(taskc, cpu, now);
-	budget = (warm_cpu_ns * (LAVD_SCALE + heat)) >> LAVD_SHIFT;
+	/*
+	 * est_stopping_clk predicts a stop time only while @cpu is running a
+	 * task whose estimate has not yet expired. Otherwise it is a sentinel
+	 * or stale: SCX_SLICE_INF while the CPU is idle
+	 * (reset_cpu_preemption_info()), 0 right after a preemption kick
+	 * (ask_cpu_yield_after()), and in the past once the running task has
+	 * overrun its estimate, as nothing refreshes it until the next
+	 * lavd_running(). time_delta() folds all three to a zero wait -- note
+	 * SCX_SLICE_INF - now reinterpreted as s64 is negative, so the
+	 * sentinel reads as "already stopped", not "never stops". A zero wait
+	 * would then be accepted as "about to free up" on the strength of a
+	 * number that predicts nothing.
+	 *
+	 * The idle sentinel is the worst of the three: accepting it duplicates
+	 * the idle-stick path but without consuming the CPU's idle bit, so
+	 * @cpu stays advertised as idle and a concurrent waker's
+	 * scx_bpf_pick_idle_cpu() can double-book it. Require a genuinely
+	 * future stop time instead.
+	 */
 	est = READ_ONCE(cpuc->est_stopping_clk);
+	if (est == SCX_SLICE_INF || !time_before(now, est))
+		return LAVD_WARM_WAIT_NO_EST;
+
 	wait = time_delta(est, now);
 
 	/*
@@ -744,7 +800,19 @@ bool warm_cpu_wait_ok(task_ctx *taskc, s32 cpu, u64 now)
 	 */
 	wait += (u64)scx_bpf_dsq_nr_queued(cpu_to_dsq(cpu)) * sys_stat.slice_wall;
 
-	return wait <= budget;
+	/*
+	 * Separate the two ways an accept can happen. A wait within
+	 * warm_cpu_ns would be accepted at zero heat, so the warmth bonus
+	 * changed nothing; only a wait above warm_cpu_ns and within the
+	 * extended budget is bought by warmth.
+	 */
+	if (wait <= warm_cpu_ns)
+		return LAVD_WARM_WAIT_OK_BASE;
+
+	heat = task_cpu_warmth(taskc, cpu, now);
+	budget = (warm_cpu_ns * (LAVD_SCALE + heat)) >> LAVD_SHIFT;
+
+	return wait <= budget ? LAVD_WARM_WAIT_OK_HEAT : LAVD_WARM_WAIT_OVER;
 }
 
 /*

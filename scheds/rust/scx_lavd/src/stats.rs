@@ -66,13 +66,31 @@ pub struct SysStats {
 
     #[stat(desc = "% of powersave mode")]
     pub pc_powersave: f64,
+
+    #[stat(desc = "Number of warm-CPU stickiness on an idle previous CPU")]
+    pub nr_warm_idle_stick: u64,
+
+    #[stat(desc = "Number of warm-CPU stickiness waiting for a busy previous CPU")]
+    pub nr_warm_wait_stick: u64,
+
+    #[stat(desc = "Number of warm-CPU waits accepted only because warmth extended the budget")]
+    pub nr_warm_wait_stick_heat: u64,
+
+    #[stat(desc = "Number of warm-CPU waits declined for being latency-critical")]
+    pub nr_warm_wait_reject_latcri: u64,
+
+    #[stat(desc = "Number of warm-CPU waits declined for having no stop-time prediction")]
+    pub nr_warm_wait_reject_est: u64,
+
+    #[stat(desc = "Number of warm-CPU waits declined for exceeding the warmth budget")]
+    pub nr_warm_wait_reject_budget: u64,
 }
 
 impl SysStats {
     pub fn format_header<W: Write>(w: &mut W) -> Result<()> {
         writeln!(
             w,
-            "\x1b[93m| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} |\x1b[0m",
+            "\x1b[93m| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} | {:8} | {:8} | {:8} | {:8} | {:9} | {:8} |\x1b[0m",
             "MSEQ",
             "# Q TASK",
             "# ACT CPU",
@@ -89,6 +107,12 @@ impl SysStats {
             "PERFORMANCE%",
             "BALANCED%",
             "POWERSAVE%",
+            "WIDLE",
+            "WWAIT",
+            "WWHEAT",
+            "WWRJ-LC",
+            "WWRJ-EST",
+            "WWRJ-BG",
         )?;
         Ok(())
     }
@@ -106,7 +130,7 @@ impl SysStats {
 
         writeln!(
             w,
-            "{color}| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} |\x1b[0m",
+            "{color}| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} | {:8} | {:8} | {:8} | {:8} | {:9} | {:8} |\x1b[0m",
             self.mseq,
             self.nr_queued_task,
             self.nr_active,
@@ -123,6 +147,12 @@ impl SysStats {
             GPoint(self.pc_performance),
             GPoint(self.pc_balanced),
             GPoint(self.pc_powersave),
+            self.nr_warm_idle_stick,
+            self.nr_warm_wait_stick,
+            self.nr_warm_wait_stick_heat,
+            self.nr_warm_wait_reject_latcri,
+            self.nr_warm_wait_reject_est,
+            self.nr_warm_wait_reject_budget,
         )?;
         Ok(())
     }

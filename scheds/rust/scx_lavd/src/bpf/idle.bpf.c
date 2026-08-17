@@ -633,6 +633,56 @@ s32 migrate_to_neighbor(struct pick_ctx *ctx, struct cpdom_ctx *cpdc,
 	return cpu;
 }
 
+/*
+ * Wait-stick path of the warm-CPU preference: should @ctx's task wait on its
+ * previous CPU's per-CPU DSQ for that CPU to free up? Accounts the outcome on
+ * the calling CPU's cpu_ctx along the way.
+ *
+ * The counters are plain, non-atomic ++ on the local cpu_ctx: we run on the
+ * calling CPU, and racing with the sys_stat collector's read-and-reset is
+ * benign, as it is for the other per-interval counters (see
+ * collect_sys_stat()).
+ */
+static __always_inline
+bool warm_cpu_wait_stick(struct pick_ctx *ctx)
+{
+	struct cpu_ctx *cpuc_cur = ctx->cpuc_cur;
+	int wres;
+
+	/*
+	 * Test the latency-criticality gate before evaluating the wait, so a
+	 * rejection here is attributed to the gate and not to a wait
+	 * computation that never ran.
+	 */
+	if (ctx->taskc->lat_cri >= sys_stat.thr_lat_cri) {
+		if (cpuc_cur)
+			cpuc_cur->nr_warm_wait_reject_latcri++;
+		return false;
+	}
+
+	wres = warm_cpu_wait_eval(ctx->taskc, ctx->prev_cpu, scx_bpf_now());
+
+	/*
+	 * Split the accepts by whether the warmth bonus was needed, and the
+	 * rejects by whether a stop time was predictable at all. Only
+	 * nr_warm_wait_stick_heat is evidence that the warmth machinery bought
+	 * a decision.
+	 */
+	if (cpuc_cur) {
+		if (wres == LAVD_WARM_WAIT_NO_EST)
+			cpuc_cur->nr_warm_wait_reject_est++;
+		else if (wres == LAVD_WARM_WAIT_OVER)
+			cpuc_cur->nr_warm_wait_reject_budget++;
+		else {
+			cpuc_cur->nr_warm_wait_stick++;
+			if (wres == LAVD_WARM_WAIT_OK_HEAT)
+				cpuc_cur->nr_warm_wait_stick_heat++;
+		}
+	}
+
+	return warm_wait_accepted(wres);
+}
+
 __hidden __noinline
 s32 pick_idle_cpu(struct pick_ctx *ctx, bool *is_idle)
 {
@@ -728,14 +778,17 @@ s32 pick_idle_cpu(struct pick_ctx *ctx, bool *is_idle)
 	if (warm_cpu_ns && ctx->prev_cpu >= 0 &&
 	    bpf_cpumask_test_cpu(ctx->prev_cpu, cast_mask(ctx->active)) &&
 	    bpf_cpumask_test_cpu(ctx->prev_cpu, ctx->p->cpus_ptr)) {
+		/* Idle-stick path. */
 		if (scx_bpf_test_and_clear_cpu_idle(ctx->prev_cpu)) {
 			cpu = ctx->prev_cpu;
 			*is_idle = true;
+			if (ctx->cpuc_cur)
+				ctx->cpuc_cur->nr_warm_idle_stick++;
 			goto unlock_out;
 		}
 
-		if (ctx->taskc->lat_cri < sys_stat.thr_lat_cri &&
-		    warm_cpu_wait_ok(ctx->taskc, ctx->prev_cpu, scx_bpf_now())) {
+		/* Wait-stick path. */
+		if (warm_cpu_wait_stick(ctx)) {
 			cpu = ctx->prev_cpu;
 			/*
 			 * Previous CPU is busy, so wait on the previous CPU's

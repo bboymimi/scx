@@ -895,6 +895,12 @@ impl<'a> Scheduler<'a> {
                 let pc_pc = Self::get_pc(st.nr_perf_cri, nr_sched);
                 let pc_lc = Self::get_pc(st.nr_lat_cri, nr_sched);
                 let pc_x_migration = Self::get_pc(st.nr_x_migration, nr_sched);
+                let nr_warm_idle_stick = st.nr_warm_idle_stick;
+                let nr_warm_wait_stick = st.nr_warm_wait_stick;
+                let nr_warm_wait_stick_heat = st.nr_warm_wait_stick_heat;
+                let nr_warm_wait_reject_latcri = st.nr_warm_wait_reject_latcri;
+                let nr_warm_wait_reject_est = st.nr_warm_wait_reject_est;
+                let nr_warm_wait_reject_budget = st.nr_warm_wait_reject_budget;
                 let nr_stealee = st.nr_stealee;
                 let nr_big = st.nr_big;
                 let pc_big = Self::get_pc(nr_big, nr_sched);
@@ -925,6 +931,12 @@ impl<'a> Scheduler<'a> {
                     pc_performance,
                     pc_balanced,
                     pc_powersave,
+                    nr_warm_idle_stick,
+                    nr_warm_wait_stick,
+                    nr_warm_wait_stick_heat,
+                    nr_warm_wait_reject_latcri,
+                    nr_warm_wait_reject_est,
+                    nr_warm_wait_reject_budget,
                 })
             }
             StatsReq::SchedSamplesNr {
