@@ -473,8 +473,19 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 
 	/*
 	 * Traverse neighbor compute domains in distance order.
+	 *
+	 * Unlike try_to_steal_task(), which hesitates exponentially before
+	 * crossing to a farther ring, force stealing has no such brake and
+	 * would sweep every domain on every near-idle dispatch. Restrict it
+	 * to the nearest ring: the far rings are the ones that generate
+	 * all-to-all coherence traffic, and cross-NUMA steals are the least
+	 * valuable ones anyway. Longer-range balancing is the periodic
+	 * balancer's job.
+	 *
+	 * LAVD_LB_NEAR_DIST is shared with the donation radius, so one
+	 * constant governs how far load may move in either direction.
 	 */
-	for (int i = 0; i < LAVD_CPDOM_MAX_DIST; i++) {
+	for (int i = 0; i < LAVD_LB_NEAR_DIST; i++) {
 		nr_nbr = min(cpdomc->nr_neighbors[i], LAVD_CPDOM_MAX_NR);
 		if (nr_nbr == 0)
 			break;
@@ -498,6 +509,20 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 			}
 
 			if (!cpdomc_pick->is_valid)
+				continue;
+
+			/*
+			 * The ring index alone does not mean "nearby". Ring i
+			 * is the i-th smallest *distance value present on this
+			 * machine*, and dist() only accrues LLC distance
+			 * within a node: +10 crosses a node, +1/+2 crosses an
+			 * LLC inside one. On a box with one cpdom per NUMA
+			 * node there is no intra-node distance at all, so ring
+			 * 0 *is* the cross-node hop and the clamp above would
+			 * permit exactly the steals it exists to prevent. Say
+			 * what we mean.
+			 */
+			if (cpdomc_pick->numa_id != cpdomc->numa_id)
 				continue;
 
 			dsq_id = pick_most_loaded_dsq(cpdomc_pick);
