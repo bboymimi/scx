@@ -1370,6 +1370,11 @@ static __always_inline bool kick_idle_cpu_in_domain(struct cpu_ctx *cpuc,
 		return false;
 
 	scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
+	/*
+	 * On the executing CPU, not @cpuc: a non-atomic increment into a remote
+	 * cpu_ctx would race that CPU's own sys_stat zeroing.
+	 */
+	cpuc_cur->nr_kick_in_domain++;
 	return true;
 }
 
@@ -1481,8 +1486,19 @@ static void donate_task(struct cpu_ctx *cpuc, struct cpu_ctx *cpuc_cur,
 			continue;
 
 		taskc = get_task_ctx(p);
-		if (!taskc || test_task_flag(taskc, LAVD_FLAG_DOMAIN_PINNED))
+		if (!taskc)
 			goto next;
+
+		/*
+		 * A task confined to this domain can never be donated. Counting
+		 * these is the direct measure of how much of the walk is futile
+		 * -- and of how much work a remote stealer would have done
+		 * while holding this DSQ's lock.
+		 */
+		if (test_task_flag(taskc, LAVD_FLAG_DOMAIN_PINNED)) {
+			cpuc_cur->nr_donate_skip_pinned++;
+			goto next;
+		}
 
 		bpf_cpumask_and(scratch, p->cpus_ptr, usable);
 		dst_cpu = pick_idle_cpu_near(scratch, cpdomc, cast_mask(scratch));
@@ -1519,6 +1535,12 @@ static void donate_task(struct cpu_ctx *cpuc, struct cpu_ctx *cpuc_cur,
 			 * path, not this one.
 			 */
 			scx_bpf_kick_cpu(dst_cpu, SCX_KICK_IDLE);
+			/*
+			 * On the executing CPU, not @cpuc: a non-atomic
+			 * increment into a remote cpu_ctx would race that
+			 * CPU's own sys_stat zeroing.
+			 */
+			cpuc_cur->nr_donation++;
 			bpf_task_release(p);
 			break;
 		}

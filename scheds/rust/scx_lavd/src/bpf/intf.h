@@ -75,6 +75,9 @@ struct sys_stat {
 	u64	nr_perf_cri;	/* number of performance-critical tasks scheduled */
 	u64	nr_lat_cri;	/* number of latency-critical tasks scheduled */
 	u64	nr_x_migration; /* number of cross domain migration */
+	u64	nr_donation;	/* number of tasks donated to idle CPUs */
+	u64	nr_kick_in_domain; /* number of idle CPUs woken in their own domain */
+	u64	nr_donate_skip_pinned; /* donation candidates rejected as domain-pinned */
 	u64	nr_big;		/* scheduled on big core */
 	u64	nr_pc_on_big;	/* performance-critical tasks scheduled on big core */
 	u64	nr_lc_on_big;	/* latency-critical tasks scheduled on big core */

@@ -455,6 +455,9 @@ struct cpu_ctx {
 	 * monitoring and sys_stat aggregation.
 	 */
 	volatile u32	nr_x_migration;
+	volatile u32	nr_donation;		/* tasks donated to an idle CPU */
+	volatile u32	nr_kick_in_domain;	/* idle CPUs woken in our own domain */
+	volatile u32	nr_donate_skip_pinned;	/* candidates rejected: domain-pinned */
 	volatile u32	nr_perf_cri;
 	volatile u32	nr_lat_cri;
 	volatile u32	avg_util_wall;	/* average of the CPU utilization (based on wall clock time) */

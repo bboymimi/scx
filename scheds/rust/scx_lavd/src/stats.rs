@@ -43,6 +43,15 @@ pub struct SysStats {
     #[stat(desc = "% of cross domain task migration")]
     pub pc_x_migration: f64,
 
+    #[stat(desc = "% of tasks donated to an idle CPU")]
+    pub pc_donation: f64,
+
+    #[stat(desc = "% of dispatches that woke an idle CPU in their own domain")]
+    pub pc_kick_in_domain: f64,
+
+    #[stat(desc = "% of donation candidates rejected as domain-pinned")]
+    pub pc_donate_skip_pinned: f64,
+
     #[stat(desc = "Number of stealee domains")]
     pub nr_stealee: u32,
 
@@ -72,7 +81,7 @@ impl SysStats {
     pub fn format_header<W: Write>(w: &mut W) -> Result<()> {
         writeln!(
             w,
-            "\x1b[93m| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} |\x1b[0m",
+            "\x1b[93m| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} |\x1b[0m",
             "MSEQ",
             "# Q TASK",
             "# ACT CPU",
@@ -81,6 +90,9 @@ impl SysStats {
             "PERF-CR%",
             "LAT-CR%",
             "X-MIG%",
+            "DONATE%",
+            "KICK-D%",
+            "SKIP-P%",
             "# STLEE",
             "BIG%",
             "PC/BIG%",
@@ -106,7 +118,7 @@ impl SysStats {
 
         writeln!(
             w,
-            "{color}| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} |\x1b[0m",
+            "{color}| {:8} | {:9} | {:9} | {:8} | {:9} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:8} | {:11} | {:12} | {:12} | {:12} |\x1b[0m",
             self.mseq,
             self.nr_queued_task,
             self.nr_active,
@@ -115,6 +127,9 @@ impl SysStats {
             GPoint(self.pc_pc),
             GPoint(self.pc_lc),
             GPoint(self.pc_x_migration),
+            GPoint(self.pc_donation),
+            GPoint(self.pc_kick_in_domain),
+            GPoint(self.pc_donate_skip_pinned),
             self.nr_stealee,
             GPoint(self.pc_big),
             GPoint(self.pc_pc_on_big),

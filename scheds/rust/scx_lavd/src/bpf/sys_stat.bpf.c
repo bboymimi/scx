@@ -66,6 +66,9 @@ struct sys_stat_ctx {
 	u32		nr_perf_cri;
 	u32		nr_lat_cri;
 	u32		nr_x_migration;
+	u32		nr_donation;
+	u32		nr_kick_in_domain;
+	u32		nr_donate_skip_pinned;
 	u32		nr_big;
 	u32		nr_pc_on_big;
 	u32		nr_lc_on_big;
@@ -500,6 +503,15 @@ static void collect_sys_stat(void)
 		c->nr_x_migration += cpuc->nr_x_migration;
 		cpuc->nr_x_migration = 0;
 
+		c->nr_donation += cpuc->nr_donation;
+		cpuc->nr_donation = 0;
+
+		c->nr_kick_in_domain += cpuc->nr_kick_in_domain;
+		cpuc->nr_kick_in_domain = 0;
+
+		c->nr_donate_skip_pinned += cpuc->nr_donate_skip_pinned;
+		cpuc->nr_donate_skip_pinned = 0;
+
 		/*
 		 * Accumulate task's latency criticlity information.
 		 *
@@ -696,6 +708,9 @@ static void calc_sys_stat(void)
 		sys_stat.nr_perf_cri >>= 1;
 		sys_stat.nr_lat_cri >>= 1;
 		sys_stat.nr_x_migration >>= 1;
+		sys_stat.nr_donation >>= 1;
+		sys_stat.nr_kick_in_domain >>= 1;
+		sys_stat.nr_donate_skip_pinned >>= 1;
 		sys_stat.nr_big >>= 1;
 		sys_stat.nr_pc_on_big >>= 1;
 		sys_stat.nr_lc_on_big >>= 1;
@@ -710,6 +725,9 @@ static void calc_sys_stat(void)
 	sys_stat.nr_perf_cri += c->nr_perf_cri;
 	sys_stat.nr_lat_cri += c->nr_lat_cri;
 	sys_stat.nr_x_migration += c->nr_x_migration;
+	sys_stat.nr_donation += c->nr_donation;
+	sys_stat.nr_kick_in_domain += c->nr_kick_in_domain;
+	sys_stat.nr_donate_skip_pinned += c->nr_donate_skip_pinned;
 	sys_stat.nr_big += c->nr_big;
 	sys_stat.nr_pc_on_big += c->nr_pc_on_big;
 	sys_stat.nr_lc_on_big += c->nr_lc_on_big;
