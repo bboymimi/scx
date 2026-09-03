@@ -466,8 +466,47 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 	struct cpdom_ctx *cpdomc_pick;
 	struct cpu_ctx *cpuc_cur;
 	s64 nr_nbr, cpdom_id;
+	u64 now, next;
 
 	cpuc_cur = get_cpu_ctx();
+
+	/*
+	 * Cap how often this domain re-probes its neighbors after finding
+	 * nothing, so a domain sweeps at most once per
+	 * LAVD_FORCE_STEAL_BACKOFF_NS.
+	 *
+	 * next_steal_probe_clk is a future deadline, not a record of the last
+	 * failure. That is what lets admission and reservation be a single
+	 * atomic operation below. Use time_before(), not time_delta(): the
+	 * latter clamps its result to >= 0, so against a future deadline it
+	 * returns 0 and the gate would suppress forever.
+	 */
+	now = scx_bpf_now();
+	next = READ_ONCE(cpdomc->next_steal_probe_clk);
+
+	if (time_before(now, next)) {
+		if (cpuc_cur)
+			cpuc_cur->nr_force_steal_suppress++;
+		return false;
+	}
+
+	/*
+	 * Reserve the probe slot before sweeping. Only the CPU that wins the
+	 * CAS proceeds; every other CPU in this domain bails immediately.
+	 *
+	 * Checking a timestamp and stamping it after the sweep does NOT
+	 * throttle anything: all CPUs in the domain observe the same expired
+	 * deadline and enter together, so each window boundary would release a
+	 * burst of nr_active_cpus full sweeps instead of one. On an 8-CPU CCX
+	 * that is 8x the intended rate, and the rate is the whole point.
+	 */
+	if (!__sync_bool_compare_and_swap(&cpdomc->next_steal_probe_clk, next,
+					  now + LAVD_FORCE_STEAL_BACKOFF_NS)) {
+		if (cpuc_cur)
+			cpuc_cur->nr_force_steal_suppress++;
+		return false;
+	}
+
 	if (cpuc_cur)
 		cpuc_cur->nr_force_steal_attempt++;
 
@@ -551,6 +590,16 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 					decrement_stealee_budget(cpdomc_pick, task_load);
 					decrement_stealer_budget(cpdomc, task_load);
 				}
+				/*
+				 * Stealing is working, so stop suppressing. A
+				 * domain whose sweeps succeed is never
+				 * throttled at all -- the brake exists only in
+				 * the failing regime, which is why this costs
+				 * nothing on work-conserving loads. The failure
+				 * path needs no write: the admission CAS
+				 * already set the deadline.
+				 */
+				WRITE_ONCE(cpdomc->next_steal_probe_clk, 0);
 				if (cpuc_cur)
 					cpuc_cur->nr_force_steal_success++;
 				return true;

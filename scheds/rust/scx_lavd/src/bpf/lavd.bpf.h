@@ -124,6 +124,7 @@ enum consts_internal {
 
 	LAVD_LB_NEAR_DIST		= 1,	/* how far load may move, in neighbour rings */
 	LAVD_DONATE_MAX_VISIT		= 4,	/* max tasks examined per donation pass */
+	LAVD_FORCE_STEAL_BACKOFF_NS	= 1000000ULL,	/* 1 ms */
 
 	LAVD_FUTEX_OP_INVALID		= -1,
 };
@@ -284,6 +285,7 @@ struct cpdom_ctx {
 	u16	nr_active_cpus;			    /* the number of active CPUs in this compute domain */
 	u16	nr_acpus_temp;			    /* temp for nr_active_cpus */
 	u64	qload_invr;			    /* queued load: sum of task_load_metric() for all queued tasks, tracked atomically */
+	u64	next_steal_probe_clk;		    /* earliest time force stealing may sweep again */
 	u64	load_invr;			    /* domain load for balancing: avg_util_invr_sum + qload_invr */
 	u32	nr_queued_task;			    /* the number of queued tasks in this domain */
 	u32	cur_util_wall_sum;		    /* the sum of CPU utilization in the current interval */
