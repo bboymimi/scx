@@ -458,6 +458,11 @@ struct cpu_ctx {
 	volatile u32	nr_donation;		/* tasks donated to an idle CPU */
 	volatile u32	nr_kick_in_domain;	/* idle CPUs woken in our own domain */
 	volatile u32	nr_donate_skip_pinned;	/* candidates rejected: domain-pinned */
+	volatile u32	nr_try_steal_attempt;	/* try_to_steal_task() entered */
+	volatile u32	nr_try_steal_success;	/* ... and consumed a task */
+	volatile u32	nr_force_steal_attempt;	/* force_to_steal_task() entered */
+	volatile u32	nr_force_steal_success;	/* ... and consumed a task */
+	volatile u32	nr_force_steal_suppress;/* skipped by the force-steal backoff */
 	volatile u32	nr_perf_cri;
 	volatile u32	nr_lat_cri;
 	volatile u32	avg_util_wall;	/* average of the CPU utilization (based on wall clock time) */

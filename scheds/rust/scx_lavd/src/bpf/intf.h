@@ -78,6 +78,11 @@ struct sys_stat {
 	u64	nr_donation;	/* number of tasks donated to idle CPUs */
 	u64	nr_kick_in_domain; /* number of idle CPUs woken in their own domain */
 	u64	nr_donate_skip_pinned; /* donation candidates rejected as domain-pinned */
+	u64	nr_try_steal_attempt;	/* number of try_to_steal_task() calls */
+	u64	nr_try_steal_success;	/* ... that consumed a task */
+	u64	nr_force_steal_attempt;	/* number of force_to_steal_task() calls */
+	u64	nr_force_steal_success;	/* ... that consumed a task */
+	u64	nr_force_steal_suppress; /* force steals skipped by the backoff */
 	u64	nr_big;		/* scheduled on big core */
 	u64	nr_pc_on_big;	/* performance-critical tasks scheduled on big core */
 	u64	nr_lc_on_big;	/* latency-critical tasks scheduled on big core */

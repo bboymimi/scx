@@ -906,6 +906,13 @@ impl<'a> Scheduler<'a> {
                 let pc_donation = Self::get_pc(st.nr_donation, nr_sched);
                 let pc_kick_in_domain = Self::get_pc(st.nr_kick_in_domain, nr_sched);
                 let pc_donate_skip_pinned = Self::get_pc(st.nr_donate_skip_pinned, nr_sched);
+                let nr_try_steal_attempt = st.nr_try_steal_attempt;
+                let pc_try_steal_success =
+                    Self::get_pc(st.nr_try_steal_success, nr_try_steal_attempt);
+                let nr_force_steal_attempt = st.nr_force_steal_attempt;
+                let pc_force_steal_success =
+                    Self::get_pc(st.nr_force_steal_success, nr_force_steal_attempt);
+                let nr_force_steal_suppress = st.nr_force_steal_suppress;
                 let nr_stealee = st.nr_stealee;
                 let nr_big = st.nr_big;
                 let pc_big = Self::get_pc(nr_big, nr_sched);
@@ -931,6 +938,11 @@ impl<'a> Scheduler<'a> {
                     pc_donation,
                     pc_kick_in_domain,
                     pc_donate_skip_pinned,
+                    nr_try_steal_attempt,
+                    pc_try_steal_success,
+                    nr_force_steal_attempt,
+                    pc_force_steal_success,
+                    nr_force_steal_suppress,
                     nr_stealee,
                     pc_big,
                     pc_pc_on_big,

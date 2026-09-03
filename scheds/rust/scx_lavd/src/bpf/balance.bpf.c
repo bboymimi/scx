@@ -347,6 +347,7 @@ u64 __attribute__((noinline)) pick_most_loaded_dsq(struct cpdom_ctx *cpdomc)
 static bool try_to_steal_task(struct cpdom_ctx *cpdomc)
 {
 	struct cpdom_ctx *cpdomc_pick;
+	struct cpu_ctx *cpuc_cur;
 	s64 nr_nbr, cpdom_id;
 
 	/*
@@ -358,6 +359,10 @@ static bool try_to_steal_task(struct cpdom_ctx *cpdomc)
 	if (no_fast_lb &&
 	    !prob_x_out_of_y(1, cpdomc->nr_active_cpus * LAVD_CPDOM_MIG_PROB_FT))
 		return false;
+
+	cpuc_cur = get_cpu_ctx();
+	if (cpuc_cur)
+		cpuc_cur->nr_try_steal_attempt++;
 
 	/*
 	 * Traverse neighbor compute domains in distance order.
@@ -434,6 +439,8 @@ static bool try_to_steal_task(struct cpdom_ctx *cpdomc)
 					decrement_stealee_budget(cpdomc_pick, task_load);
 					decrement_stealer_budget(cpdomc, task_load);
 				}
+				if (cpuc_cur)
+					cpuc_cur->nr_try_steal_success++;
 				return true;
 			}
 		}
@@ -457,7 +464,12 @@ static bool try_to_steal_task(struct cpdom_ctx *cpdomc)
 static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 {
 	struct cpdom_ctx *cpdomc_pick;
+	struct cpu_ctx *cpuc_cur;
 	s64 nr_nbr, cpdom_id;
+
+	cpuc_cur = get_cpu_ctx();
+	if (cpuc_cur)
+		cpuc_cur->nr_force_steal_attempt++;
 
 	/*
 	 * Traverse neighbor compute domains in distance order.
@@ -514,6 +526,8 @@ static bool force_to_steal_task(struct cpdom_ctx *cpdomc)
 					decrement_stealee_budget(cpdomc_pick, task_load);
 					decrement_stealer_budget(cpdomc, task_load);
 				}
+				if (cpuc_cur)
+					cpuc_cur->nr_force_steal_success++;
 				return true;
 			}
 		}
