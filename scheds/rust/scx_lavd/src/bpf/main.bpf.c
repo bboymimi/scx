@@ -222,6 +222,11 @@ const volatile u8	mig_delta_pct = 0;
 const volatile u8	no_fast_lb = 0;
 
 /*
+ * Disable task donation at ops.dispatch(); set via --no-task-donation.
+ */
+const volatile bool	no_task_donation;
+
+/*
  * Warm-CPU wait budget. When > 0, a waking latency-tolerant task waits up to
  * this many ns for its previous CPU to free up before migrating to an idle one,
  * queueing on that CPU's per-CPU DSQ meanwhile. Warm cache and TLB state on the
@@ -1450,7 +1455,7 @@ static void donate_task(struct cpu_ctx *cpuc, struct cpu_ctx *cpuc_cur,
 	struct task_struct *p;
 	int nr_visited = 0;
 
-	if (nr_cpdoms <= 1 || !scratch)
+	if (no_task_donation || nr_cpdoms <= 1 || !scratch)
 		return;
 
 	bpf_for_each(scx_dsq, p, cpdom_dsq_id, 0) {

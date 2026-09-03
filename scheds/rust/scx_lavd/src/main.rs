@@ -209,6 +209,12 @@ struct Opts {
     #[clap(long = "no-fast-lb", action = clap::ArgAction::SetTrue)]
     no_fast_lb: bool,
 
+    /// Disable task donation. By default, a CPU that still has queued work in
+    /// its compute domain after dispatching pushes one task to an idle CPU
+    /// instead of leaving that CPU to find the work by stealing.
+    #[clap(long = "no-task-donation", action = clap::ArgAction::SetTrue)]
+    no_task_donation: bool,
+
     /// Disable preemption.
     #[clap(long = "no-preemption", action = clap::ArgAction::SetTrue)]
     no_preemption: bool,
@@ -703,6 +709,7 @@ impl<'a> Scheduler<'a> {
         rodata.lb_local_dsq_util_wall = ((opts.lb_local_dsq_util_pct as u64) << 10) / 100;
         rodata.no_use_em = opts.no_use_em as u8;
         rodata.no_fast_lb = opts.no_fast_lb as u8;
+        rodata.no_task_donation = opts.no_task_donation;
         rodata.no_wake_sync = opts.no_wake_sync;
         rodata.no_slice_boost = opts.no_slice_boost;
         rodata.per_cpu_dsq = opts.per_cpu_dsq;
