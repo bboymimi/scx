@@ -1368,6 +1368,160 @@ static __always_inline bool kick_idle_cpu_in_domain(struct cpu_ctx *cpuc,
 	return true;
 }
 
+/*
+ * Find an idle CPU for @cand in a domain within LAVD_LB_NEAR_DIST rings of
+ * @cpdomc.
+ *
+ * scx_bpf_pick_idle_cpu() has NO topological preference -- it is
+ * cpumask_any_and_distribute(), a round-robin rotor over whatever mask it is
+ * given -- so locality has to come from narrowing the mask ourselves, exactly
+ * as pick_idle_cpu_at_cpdom() does.
+ *
+ * @cand is the caller's precomputed (task cpumask & usable) set: invariant
+ * across neighbours, so it is built once by the caller rather than per-ring.
+ *
+ * Returns -ENOENT carried in a u64, matching pick_most_loaded_dsq()'s
+ * convention; callers must test (s64)ret < 0.
+ *
+ * Caller must hold bpf_rcu_read_lock().
+ */
+static u64 __attribute__((noinline))
+pick_idle_cpu_near(struct bpf_cpumask *scratch, struct cpdom_ctx *cpdomc,
+		   const struct cpumask *cand)
+{
+	s64 nr_nbr, nbr;
+	s32 cpu;
+
+	for (int i = 0; i < LAVD_LB_NEAR_DIST; i++) {
+		nr_nbr = min(cpdomc->nr_neighbors[i], LAVD_CPDOM_MAX_NR);
+		if (nr_nbr == 0)
+			break;
+
+		for (int j = 0; j < LAVD_CPDOM_MAX_NR; j++) {
+			struct bpf_cpumask *nbr_mask;
+
+			if (j >= nr_nbr)
+				break;
+
+			nbr = get_neighbor_id(cpdomc, i, j);
+			nbr_mask = MEMBER_VPTR(cpdom_cpumask, [nbr]);
+			if (!nbr_mask)
+				continue;
+
+			bpf_cpumask_and(scratch, cand, cast_mask(nbr_mask));
+			cpu = scx_bpf_pick_idle_cpu(cast_mask(scratch), 0);
+			if (cpu >= 0)
+				return cpu;
+		}
+	}
+	return -ENOENT;
+}
+
+/*
+ * Push one queued task out to an idle CPU in a nearby domain.
+ *
+ * Called from lavd_dispatch() after this CPU consumed a task for itself and
+ * after kick_idle_cpu_in_domain() found no idle CPU here -- so by construction
+ * the domain is congested: it has queued work and no local idle capacity.
+ *
+ * The affinity test happens on the *owner* side. A domain-pinned task is
+ * skipped here at no cost to anybody else, as opposed to a remote CPU
+ * discovering the same fact while holding this DSQ's lock -- which is the
+ * contention this function exists to remove.
+ *
+ * At most one task moves per pass, and the pass runs once per dispatch, so the
+ * donation rate tracks the context-switch rate. No explicit throttle needed.
+ *
+ * scx_bpf_dsq_move() is legal only from ops.dispatch() or an unlocked context.
+ * This function must therefore stay reachable from lavd_dispatch() and nothing
+ * else: making it reachable from ops.enqueue() fails the load on kernels >= 7.1
+ * and ejects the scheduler at runtime on older ones. It is also why the move is
+ * immediately followed by a break -- scx_bpf_dsq_move() drops and retakes the
+ * rq lock, so anything cached across it (rq occupancy, curr, the iterator) is
+ * stale afterwards.
+ *
+ * Caller must hold bpf_rcu_read_lock().
+ */
+static void donate_task(struct cpu_ctx *cpuc, struct cpu_ctx *cpuc_cur,
+			struct cpdom_ctx *cpdomc, u64 cpdom_dsq_id,
+			const struct cpumask *usable)
+{
+	struct bpf_cpumask *scratch = cpuc_cur->i_mask;
+	struct task_struct *p;
+	int nr_visited = 0;
+
+	if (nr_cpdoms <= 1 || !scratch)
+		return;
+
+	bpf_for_each(scx_dsq, p, cpdom_dsq_id, 0) {
+		struct cpu_ctx *dst_cpuc;
+		task_ctx *taskc;
+		u64 dst_cpu;
+
+		/*
+		 * Visit a bounded number of candidates and move at most one.
+		 * The bound matters: bpf_iter_scx_dsq_next() takes this DSQ's
+		 * lock on every step, and this is the very lock the change
+		 * exists to relieve.
+		 */
+		if (nr_visited++ >= LAVD_DONATE_MAX_VISIT)
+			break;
+
+		/*
+		 * note that this is a hack to bypass the restriction of the
+		 * current bpf not trusting the pointer p.
+		 */
+		p = bpf_task_from_pid(p->pid);
+		if (!p)
+			continue;
+
+		taskc = get_task_ctx(p);
+		if (!taskc || test_task_flag(taskc, LAVD_FLAG_DOMAIN_PINNED))
+			goto next;
+
+		bpf_cpumask_and(scratch, p->cpus_ptr, usable);
+		dst_cpu = pick_idle_cpu_near(scratch, cpdomc, cast_mask(scratch));
+		if ((s64)dst_cpu < 0)
+			goto next;
+
+		dst_cpuc = get_cpu_ctx_id(dst_cpu);
+		if (!dst_cpuc)
+			goto next;
+
+		if (scx_bpf_dsq_move(BPF_FOR_EACH_ITER, p,
+				     SCX_DSQ_LOCAL_ON | dst_cpu, 0)) {
+			/*
+			 * Hand the load accounting over with the task. The
+			 * unaccounts MUST precede the accounts:
+			 * account_queued_load() early-returns while
+			 * taskc->queued_in_cpdom_id is still set, so accounting
+			 * first would silently no-op and leave the load on the
+			 * old domain.
+			 */
+			unaccount_queued_load(taskc);
+			unaccount_queued_load_pcpu(taskc);
+			account_queued_load(taskc, dst_cpuc->cpdom_id);
+			account_queued_load_pcpu(taskc, get_primary_cpu(dst_cpu));
+			taskc->suggested_cpu_id = dst_cpu;
+			taskc->cpdom_id = dst_cpuc->cpdom_id;
+
+			/*
+			 * Required, not an optimization: scx_bpf_dsq_move() ->
+			 * move_task_between_dsqs() ->
+			 * move_remote_task_to_local_dsq() does not
+			 * resched_curr(). The resched_curr(dst_rq) in the
+			 * kernel belongs to dispatch_to_local_dsq(), the insert
+			 * path, not this one.
+			 */
+			scx_bpf_kick_cpu(dst_cpu, SCX_KICK_IDLE);
+			bpf_task_release(p);
+			break;
+		}
+next:
+		bpf_task_release(p);
+	}
+}
+
 void BPF_STRUCT_OPS(lavd_dispatch, s32 cpu, struct task_struct *prev)
 {
 	struct bpf_cpumask *active, *ovrflw;
@@ -1593,8 +1747,9 @@ consume_out:
 		struct cpdom_ctx *cpdomc = MEMBER_VPTR(cpdom_ctxs, [cpuc->cpdom_id]);
 
 		/*
-		 * Work still queued here? Wake one of our own idle CPUs so it
-		 * can consume from the same DSQ.
+		 * Work still queued here? Prefer waking one of our own idle
+		 * CPUs; only if there is none does the domain count as
+		 * congested and worth exporting from.
 		 *
 		 * qload_invr is the live, atomically-maintained queued load.
 		 * Do NOT use scx_bpf_dsq_nr_queued() here: for a user DSQ it
@@ -1620,9 +1775,11 @@ consume_out:
 			if (cpuc_cur) {
 				bpf_rcu_read_lock();
 				usable = build_usable_mask(cpuc_cur);
-				if (usable)
-					kick_idle_cpu_in_domain(cpuc, cpuc_cur,
-								usable);
+				if (usable &&
+				    !kick_idle_cpu_in_domain(cpuc, cpuc_cur,
+							     usable))
+					donate_task(cpuc, cpuc_cur, cpdomc,
+						    cpdom_dsq_id, usable);
 				bpf_rcu_read_unlock();
 			}
 		}

@@ -122,6 +122,9 @@ enum consts_internal {
 	LAVD_CPDOM_MIG_SHIFT_OL		= 4, /* when over-loaded:   1/2**4 = [-6.25%, +6.25%] */
 	LAVD_CPDOM_MIG_PROB_FT		= (LAVD_SYS_STAT_INTERVAL_NS / LAVD_SLICE_MAX_NS_DFL), /* roughly twice per interval */
 
+	LAVD_LB_NEAR_DIST		= 1,	/* how far load may move, in neighbour rings */
+	LAVD_DONATE_MAX_VISIT		= 4,	/* max tasks examined per donation pass */
+
 	LAVD_FUTEX_OP_INVALID		= -1,
 };
 
@@ -542,8 +545,12 @@ struct cpu_ctx {
 	struct bpf_cpumask __kptr *a_mask;	/* scratch: task & active */
 	struct bpf_cpumask __kptr *o_mask;	/* scratch: task & overflow */
 	struct bpf_cpumask __kptr *temp_mask;	/* scratch: general-purpose */
-	struct bpf_cpumask __kptr *i_mask;	/* scratch: task & idle */
-	struct bpf_cpumask __kptr *ia_mask;	/* scratch: idle & active */
+	struct bpf_cpumask __kptr *i_mask;	/* scratch: task & idle; also the
+						   donation candidate set in
+						   ops.dispatch() */
+	struct bpf_cpumask __kptr *ia_mask;	/* scratch: idle & active; also the
+						   donation usable set in
+						   ops.dispatch() */
 	struct bpf_cpumask __kptr *io_mask;	/* scratch: idle & overflow */
 	struct bpf_cpumask __kptr *iat_mask;	/* scratch: idle & active & turbo */
 
