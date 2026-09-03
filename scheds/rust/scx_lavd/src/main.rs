@@ -841,6 +841,15 @@ impl<'a> Scheduler<'a> {
     }
 
     fn get_pc(x: u64, y: u64) -> f64 {
+        // Guard the zero denominator. 0/0 yields NaN, which serde_json
+        // serializes as `null`; the stats client then fails to deserialize
+        // it as f64 and discards the *entire* sample, not just this field.
+        // Reachable whenever a mechanism is switched off -- e.g.
+        // nr_force_steal_attempt is 0 under --mig-delta-pct, which made
+        // --stats and --monitor emit nothing at all for that whole run.
+        if y == 0 {
+            return 0.;
+        }
         return 100. * x as f64 / y as f64;
     }
 
