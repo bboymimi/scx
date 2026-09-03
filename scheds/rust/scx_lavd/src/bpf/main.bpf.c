@@ -1305,6 +1305,69 @@ void consume_prev(struct task_struct *prev, task_ctx *taskc_prev, struct cpu_ctx
 	cpuc->flags = taskc_prev->flags;
 }
 
+/*
+ * The set of CPUs that may take work. Under core compaction an idle CPU may be
+ * idle *because* do_core_compaction() parked it; active|overflow is exactly the
+ * set that may be woken. Built unconditionally so callers never branch on NULL.
+ *
+ * Not cached across calls: ovrflw_cpumask is mutated from the dispatch path
+ * itself, so a compaction-time-only union would go stale.
+ *
+ * Caller must hold bpf_rcu_read_lock().
+ */
+static __always_inline const struct cpumask *build_usable_mask(struct cpu_ctx *cpuc_cur)
+{
+	struct bpf_cpumask *um = cpuc_cur->ia_mask;
+
+	if (!um)
+		return NULL;
+
+	if (use_full_cpus()) {
+		bpf_cpumask_setall(um);
+	} else {
+		struct bpf_cpumask *active = active_cpumask, *ovrflw = ovrflw_cpumask;
+
+		if (!active || !ovrflw)
+			return NULL;
+		bpf_cpumask_or(um, cast_mask(active), cast_mask(ovrflw));
+	}
+	return cast_mask(um);
+}
+
+/*
+ * If this domain still has queued work and one of its own CPUs is idle, wake
+ * it: it can consume from the same DSQ. Cheaper and more local than exporting
+ * the task, so this runs before any donation is considered.
+ *
+ * Caller must hold bpf_rcu_read_lock().
+ */
+static __always_inline bool kick_idle_cpu_in_domain(struct cpu_ctx *cpuc,
+						    struct cpu_ctx *cpuc_cur,
+						    const struct cpumask *usable)
+{
+	struct bpf_cpumask *own, *scratch = cpuc_cur->i_mask;
+	s32 cpu;
+
+	own = MEMBER_VPTR(cpdom_cpumask, [cpuc->cpdom_id]);
+	if (!own || !scratch)
+		return false;
+
+	bpf_cpumask_and(scratch, cast_mask(own), usable);
+
+	/*
+	 * This test-and-clears, so the CPU is ours; kick it bare. Do NOT add a
+	 * second scx_bpf_test_and_clear_cpu_idle() guard the way enqueue_cb()
+	 * does -- that site never picked, we did, and the second test would
+	 * fail and swallow the kick.
+	 */
+	cpu = scx_bpf_pick_idle_cpu(cast_mask(scratch), 0);
+	if (cpu < 0)
+		return false;
+
+	scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
+	return true;
+}
+
 void BPF_STRUCT_OPS(lavd_dispatch, s32 cpu, struct task_struct *prev)
 {
 	struct bpf_cpumask *active, *ovrflw;
@@ -1526,8 +1589,45 @@ consume_out:
 	/*
 	 * Otherwise, consume a task.
 	 */
-	if (consume_task(cpu_dsq_id, cpdom_dsq_id))
+	if (consume_task(cpu_dsq_id, cpdom_dsq_id)) {
+		struct cpdom_ctx *cpdomc = MEMBER_VPTR(cpdom_ctxs, [cpuc->cpdom_id]);
+
+		/*
+		 * Work still queued here? Wake one of our own idle CPUs so it
+		 * can consume from the same DSQ.
+		 *
+		 * qload_invr is the live, atomically-maintained queued load.
+		 * Do NOT use scx_bpf_dsq_nr_queued() here: for a user DSQ it
+		 * is an rhashtable lookup on every dispatch, and
+		 * nr_queued_task is up to 10 ms stale.
+		 */
+		if (cpdomc && READ_ONCE(cpdomc->qload_invr)) {
+			struct cpu_ctx *cpuc_cur = get_cpu_ctx();
+			const struct cpumask *usable;
+
+			/*
+			 * @cpuc is the dispatched-for CPU, which under core
+			 * scheduling is not necessarily this one. Scratch
+			 * masks must come from @cpuc_cur, the CPU actually
+			 * executing.
+			 *
+			 * The bpf_rcu_read_lock() pair is NOT required here --
+			 * it matches the surrounding idiom and documents
+			 * intent, nothing more. A non-sleepable callback is
+			 * already inside a classic RCU read-side critical
+			 * section, so this nests as a no-op.
+			 */
+			if (cpuc_cur) {
+				bpf_rcu_read_lock();
+				usable = build_usable_mask(cpuc_cur);
+				if (usable)
+					kick_idle_cpu_in_domain(cpuc, cpuc_cur,
+								usable);
+				bpf_rcu_read_unlock();
+			}
+		}
 		return;
+	}
 
 	/*
 	 * If nothing to run, continue running the previous task.
